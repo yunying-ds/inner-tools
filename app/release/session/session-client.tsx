@@ -80,6 +80,8 @@ export default function SessionPage() {
   const [exitFlow, setExitFlow] = useState<null | "reason" | "notes">(null);
   const [exitReason, setExitReason] = useState("");
   const [exitNotes, setExitNotes] = useState("");
+  const [wantReidentifyMode, setWantReidentifyMode] = useState(false);
+  const [wantReidentifyInput, setWantReidentifyInput] = useState("");
 
   const updateSession = useCallback((patch: Partial<SessionState>) => {
     setSession((prev) => ({ ...prev, ...patch }));
@@ -93,7 +95,11 @@ export default function SessionPage() {
       wantsLoadedRef.current = true;
       loadWantOptions();
     }
-    if (session.currentStep !== 7) wantsLoadedRef.current = false;
+    if (session.currentStep !== 7) {
+      wantsLoadedRef.current = false;
+      setWantReidentifyMode(false);
+      setWantReidentifyInput("");
+    }
   }, [session.currentStep]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- 步骤1 ----
@@ -228,7 +234,7 @@ export default function SessionPage() {
   }
 
   // ---- 步骤7 ----
-  async function loadWantOptions() {
+  async function loadWantOptions(overrideInput?: string) {
     setLoading(true);
     try {
       const res = await fetch("/api/release/generate-wants", {
@@ -237,7 +243,7 @@ export default function SessionPage() {
         body: JSON.stringify({
           emotionLevel: session.identifiedEmotion?.level,
           emotionWords: session.identifiedEmotion?.words ?? [],
-          userInput: session.history[0]?.answer ?? "",
+          userInput: overrideInput ?? session.history[0]?.answer ?? "",
         }),
       });
       if (!res.ok) throw new Error(await res.text());
@@ -248,6 +254,16 @@ export default function SessionPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleWantReidentifySubmit() {
+    if (!wantReidentifyInput.trim() || loading) return;
+    const input = wantReidentifyInput;
+    setWantReidentifyMode(false);
+    setWantReidentifyInput("");
+    setRankedWants([]);
+    updateSession({ generatedWants: [] });
+    await loadWantOptions(input);
   }
 
   function handleToggleWant(want: WantOption) {
@@ -353,8 +369,24 @@ export default function SessionPage() {
 
   // ---- 步骤9（可选记录） ----
   function handleStep9Submit() {
-    setCompletionMessage("这次释放完成了。");
-    setCompleted(true);
+    if (!textInput.trim()) {
+      setCompletionMessage("这次释放完成了。");
+      setCompleted(true);
+      return;
+    }
+    // 有内容：保留文字，重置 session 回到步骤1，预填内容进入下一轮识别
+    setSession({ ...createInitialSession(), aiMessage: "有新的感受浮现，让我们继续。" });
+    setSliderValue([5]);
+    setWantPhaseIndex(0);
+    setWantLoopCount(0);
+    setWantCheckPhase(null);
+    setRankedWants([]);
+    setCurrentWantRankIndex(0);
+    setEmotionSelection(null);
+    setRemainingEmotions([]);
+    setNextEmotionOffer(null);
+    setAnimKey((k) => k + 1);
+    // textInput 保持不变，步骤1 textarea 会预填用户刚写的内容
   }
 
   function handleStartNextEmotion(emotion: IdentifiedEmotion, remaining: IdentifiedEmotion[]) {
@@ -568,8 +600,7 @@ export default function SessionPage() {
           {step === 1 && !emotionSelection && (
             <StepOpenText
               question="此刻你有什么感受？"
-              subtext="尝试描述内心的感受——比如紧张、委屈、疲惫、担心……而不只是发生了什么事。"
-              placeholder="可以从身体感觉开始，或者最近让你难受的那件事……"
+              placeholder="可以描述最近发生的一件事、一直在脑海里转的念头，或是身体某个部位的感觉……"
               value={textInput}
               onChange={setTextInput}
               onSubmit={handleStep1Submit}
@@ -607,7 +638,7 @@ export default function SessionPage() {
           {step === 2 && (
             <StepYesNo
               question={`你能允许这份「${emotionLabel}」就这样存在吗？`}
-              subtext={`提示：我们释放的是内心的「${emotionLabel}」这个感受，而不是引发它的那件事或那个情况。`}
+              subtext="先感受一下——它在身体的哪里？胸口、喉咙、还是别的地方？"
               onAnswer={handleYesNo}
             />
           )}
@@ -671,8 +702,21 @@ export default function SessionPage() {
             </div>
           )}
 
+          {/* 步骤7：重新识别想要 */}
+          {step === 7 && wantReidentifyMode && (
+            <StepOpenText
+              question="在这件事里，你最希望得到什么？"
+              subtext="换个角度来看——如果这件事能按你心意发展，那会是什么样？"
+              placeholder="用自己的话说就好，比如「希望他能理解我」……"
+              value={wantReidentifyInput}
+              onChange={setWantReidentifyInput}
+              onSubmit={handleWantReidentifySubmit}
+              loading={loading}
+            />
+          )}
+
           {/* 步骤7：多选想要 */}
-          {step === 7 && (
+          {step === 7 && !wantReidentifyMode && (
             <div className="space-y-5">
               <div className="space-y-2">
                 <h2 className="text-xl font-medium">在这份「{emotionLabel}」背后，你最想要的是……</h2>
@@ -712,6 +756,14 @@ export default function SessionPage() {
                 <Button className="w-full" onClick={handleConfirmWants}>
                   开始释放{rankedWants.length > 1 ? `（共 ${rankedWants.length} 个）` : ""}
                 </Button>
+              )}
+              {!loading && session.generatedWants.length > 0 && (
+                <button
+                  onClick={() => { setWantReidentifyMode(true); setAnimKey((k) => k + 1); }}
+                  className="w-full text-xs text-muted-foreground/50 hover:text-muted-foreground text-center py-1 transition-colors"
+                >
+                  这些都不太准确，换个角度识别
+                </button>
               )}
             </div>
           )}
@@ -775,7 +827,7 @@ export default function SessionPage() {
           {step === 9 && (
             <div className="space-y-4">
               <h2 className="text-xl font-medium leading-snug">有什么想记录的吗？</h2>
-              <p className="text-sm text-muted-foreground">感受的变化、对自己的认识……可以不写，直接完成。</p>
+              <p className="text-sm text-muted-foreground">写下此刻的感受或想法——如果还有其他情绪浮现，也可以写，会自动识别是否继续。可以不写，直接完成。</p>
               <Textarea
                 placeholder="此刻的感受、想法……（可选）"
                 value={textInput}
@@ -783,7 +835,9 @@ export default function SessionPage() {
                 rows={4}
                 className="resize-none"
               />
-              <Button className="w-full" onClick={handleStep9Submit}>完成</Button>
+              <Button className="w-full" onClick={handleStep9Submit}>
+                {textInput.trim() ? "继续释放" : "完成"}
+              </Button>
             </div>
           )}
           </>}

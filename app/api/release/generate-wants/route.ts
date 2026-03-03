@@ -16,13 +16,37 @@ export async function POST(req: NextRequest) {
     const message = await client.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 600,
+      tools: [
+        {
+          name: "generate_wants",
+          description: "生成三大想要的具体选项",
+          input_schema: {
+            type: "object" as const,
+            properties: {
+              wants: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    label: { type: "string" },
+                    description: { type: "string" },
+                  },
+                  required: ["label", "description"],
+                },
+              },
+            },
+            required: ["wants"],
+          },
+        },
+      ],
+      tool_choice: { type: "tool", name: "generate_wants" },
       messages: [
         {
           role: "user",
           content: `你是圣多纳释放法引导师。根据用户的情绪情况，生成"三大想要"的具体选项。
 
 用户情况：
-- 用户描述："${userInput}"
+- 用户描述：「${userInput}」
 - 识别情绪：${(emotionWords ?? []).join("、")}
 - 情绪层级：${emotionLevel ?? "未知"}
 
@@ -32,23 +56,18 @@ export async function POST(req: NextRequest) {
 3. 想要安全/生存
 
 请根据用户的具体情境定制描述，不要用通用模板，要贴合用户实际情况。
-
-返回 JSON（不要包含其他文字）：
-{
-  "wants": [
-    {"label": "想要被认可/被爱", "description": "针对用户具体情境的描述，以你想要...开头，以吗？结尾"},
-    {"label": "想要掌控", "description": "针对用户具体情境的描述，以你想要...开头，以吗？结尾"},
-    {"label": "想要安全/生存", "description": "针对用户具体情境的描述，以你担心...或你害怕...开头，以吗？结尾"}
-  ]
-}`,
+- 想要被认可/被爱：以"你想要..."开头，以"吗？"结尾
+- 想要掌控：以"你想要..."开头，以"吗？"结尾
+- 想要安全/生存：以"你担心..."或"你害怕..."开头，以"吗？"结尾`,
         },
       ],
     });
 
-    const text = message.content[0].type === "text" ? message.content[0].text : "";
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return NextResponse.json({ wants: FALLBACK_WANTS });
-    return NextResponse.json(JSON.parse(jsonMatch[0]));
+    const toolUse = message.content.find((c) => c.type === "tool_use");
+    if (!toolUse || toolUse.type !== "tool_use") {
+      return NextResponse.json({ wants: FALLBACK_WANTS });
+    }
+    return NextResponse.json(toolUse.input);
   } catch (e) {
     console.error("[generate-wants]", e);
     return NextResponse.json({ wants: FALLBACK_WANTS });
