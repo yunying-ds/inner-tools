@@ -8,6 +8,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
 import { Progress } from "@/components/ui/progress";
 import type { SessionState, WantOption, SavedSession, IdentifiedEmotion } from "@/types/release";
+import { FeedbackForm } from "@/components/release/FeedbackForm";
+import { EmotionPicker } from "@/components/release/EmotionPicker";
+import { EMOTION_LEVELS } from "@/lib/release/emotions";
 
 const TOTAL_STEPS = 9;
 const LOOP_WARNING_THRESHOLD = 3;
@@ -82,6 +85,21 @@ export default function SessionPage() {
   const [exitNotes, setExitNotes] = useState("");
   const [wantReidentifyMode, setWantReidentifyMode] = useState(false);
   const [wantReidentifyInput, setWantReidentifyInput] = useState("");
+  const [manualEmotionPicker, setManualEmotionPicker] = useState(false);
+  const [step9Feedback, setStep9Feedback] = useState<{ type: string; feedback: string; hasNewEmotion: boolean } | null>(null);
+  const [pendingEmotion, setPendingEmotion] = useState<IdentifiedEmotion | null>(null);
+  const [correctionMode, setCorrectionMode] = useState<null | "input" | "picker" | "self">(null);
+  const [correctionInput, setCorrectionInput] = useState("");
+  const [lastTextInput, setLastTextInput] = useState("");
+  const [selfInputMode, setSelfInputMode] = useState(false);
+  const [selfInputWord, setSelfInputWord] = useState("");
+  const [selfInputLevel, setSelfInputLevel] = useState<number | null>(null);
+  const [summaryEntries, setSummaryEntries] = useState<{ emotion: IdentifiedEmotion; wants: WantOption[] }[]>([]);
+
+  function captureEntry(emotion: IdentifiedEmotion | null, wants: WantOption[]) {
+    if (!emotion) return;
+    setSummaryEntries((prev) => [...prev, { emotion, wants }]);
+  }
 
   const updateSession = useCallback((patch: Partial<SessionState>) => {
     setSession((prev) => ({ ...prev, ...patch }));
@@ -121,13 +139,12 @@ export default function SessionPage() {
         setEmotionSelection(data.allEmotions);
         setAnimKey((k) => k + 1);
       } else {
-        updateSession({
-          identifiedEmotion: data,
-          aiMessage: data.aiReply,
-          history: [...session.history, historyEntry],
-          currentStep: 2,
-        });
+        // 先进确认屏，不直接跳 step 2
+        setSession((prev) => ({ ...prev, aiMessage: data.aiReply, history: [...prev.history, historyEntry] }));
+        setPendingEmotion(data);
+        setAnimKey((k) => k + 1);
       }
+      setLastTextInput(textInput);
       setTextInput("");
     } catch (e) {
       console.error(e);
@@ -144,6 +161,79 @@ export default function SessionPage() {
     updateSession({ identifiedEmotion: emotion, aiMessage: null, currentStep: 2 });
   }
 
+  function handleConfirmEmotion() {
+    if (!pendingEmotion) return;
+    setPendingEmotion(null);
+    setCorrectionMode(null);
+    updateSession({ identifiedEmotion: pendingEmotion, currentStep: 2 });
+  }
+
+  async function handleCorrectionSubmit() {
+    if (!correctionInput.trim() || loading) return;
+    setLoading(true);
+    try {
+      const res = await fetch("/api/release/identify-emotion", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userInput: correctionInput }),
+      });
+      const data = await res.json();
+      // 在确认屏时更新 pending；在释放中时直接更新 session
+      if (pendingEmotion !== null) {
+        setPendingEmotion({ ...data, words: data.wordsCn ?? data.wordsEn ?? [] });
+      } else {
+        updateSession({ identifiedEmotion: { ...data, words: data.wordsCn ?? data.wordsEn ?? [] } });
+      }
+      setCorrectionMode(null);
+      setCorrectionInput("");
+    } catch {
+      // 静默失败
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleCorrectionPick(emotion: IdentifiedEmotion) {
+    if (pendingEmotion !== null) {
+      setPendingEmotion(emotion);
+    } else {
+      updateSession({ identifiedEmotion: emotion });
+    }
+    setCorrectionMode(null);
+  }
+
+  function handleSelfInputConfirm() {
+    if (!selfInputWord.trim() || selfInputLevel === null) return;
+    const level = EMOTION_LEVELS.find((l) => l.index === selfInputLevel)!;
+    const emotion: IdentifiedEmotion = {
+      words: [selfInputWord.trim()],
+      wordsCn: [selfInputWord.trim()],
+      level: level.name as IdentifiedEmotion["level"],
+      levelEn: level.nameEn,
+      levelIndex: level.index as IdentifiedEmotion["levelIndex"],
+      aiReply: `好的，我们来释放「${selfInputWord.trim()}」。`,
+    };
+    setSelfInputMode(false);
+    setSelfInputWord("");
+    setSelfInputLevel(null);
+    updateSession({
+      identifiedEmotion: emotion,
+      aiMessage: emotion.aiReply,
+      history: [...session.history, { stepId: 1, question: "自行输入情绪", answer: `${level.name}：${selfInputWord.trim()}`, timestamp: Date.now() }],
+      currentStep: 2,
+    });
+  }
+
+  function handleManualEmotionSelect(emotion: IdentifiedEmotion) {
+    setManualEmotionPicker(false);
+    updateSession({
+      identifiedEmotion: emotion,
+      aiMessage: emotion.aiReply,
+      history: [...session.history, { stepId: 1, question: "手动选择情绪", answer: `${emotion.level}：${emotion.words.join("、")}`, timestamp: Date.now() }],
+      currentStep: 2,
+    });
+  }
+
   // ---- 退出流程 ----
   function handleExitReason(reason: string) {
     setExitReason(reason);
@@ -152,6 +242,7 @@ export default function SessionPage() {
   }
 
   function handleExitConfirm() {
+    captureEntry(session.identifiedEmotion, rankedWants);
     const saved: SavedSession = {
       id: session.id,
       startedAt: session.startedAt,
@@ -248,7 +339,7 @@ export default function SessionPage() {
       });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      updateSession({ generatedWants: data.wants });
+      updateSession({ generatedWants: Array.isArray(data.wants) ? data.wants : [] });
     } catch (e) {
       console.error(e);
     } finally {
@@ -357,6 +448,7 @@ export default function SessionPage() {
       updateSession({ selectedWant: null, currentStep: 7, aiMessage: "还有其他的想要，重新选择" });
     } else {
       setWantCheckPhase(null);
+      captureEntry(session.identifiedEmotion, rankedWants);
       saveSessionToHistory({ ...session, status: "completed" });
       if (remainingEmotions.length > 0) {
         setNextEmotionOffer(remainingEmotions[0]);
@@ -367,14 +459,47 @@ export default function SessionPage() {
     }
   }
 
+  function handleSkipWants() {
+    captureEntry(session.identifiedEmotion, []);
+    saveSessionToHistory({ ...session, status: "completed" });
+    if (remainingEmotions.length > 0) {
+      setNextEmotionOffer(remainingEmotions[0]);
+      setRemainingEmotions(remainingEmotions.slice(1));
+    } else {
+      updateSession({ currentStep: 9, aiMessage: null });
+    }
+  }
+
   // ---- 步骤9（可选记录） ----
-  function handleStep9Submit() {
+  async function handleStep9Submit() {
     if (!textInput.trim()) {
       setCompletionMessage("这次释放完成了。");
       setCompleted(true);
       return;
     }
-    // 有内容：保留文字，重置 session 回到步骤1，预填内容进入下一轮识别
+    setLoading(true);
+    try {
+      const res = await fetch("/api/release/analyze-step9", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userInput: textInput,
+          currentEmotion: session.identifiedEmotion?.level ?? "情绪",
+        }),
+      });
+      const data = await res.json();
+      setStep9Feedback(data);
+    } catch {
+      setStep9Feedback({ type: "release_signal", feedback: "感谢你的记录，这次释放完成了。", hasNewEmotion: false });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleStep9Continue() {
+    // 有新情绪：保留文字，重置进入下一轮
+    const input = textInput;
+    setStep9Feedback(null);
     setSession({ ...createInitialSession(), aiMessage: "有新的感受浮现，让我们继续。" });
     setSliderValue([5]);
     setWantPhaseIndex(0);
@@ -385,8 +510,13 @@ export default function SessionPage() {
     setEmotionSelection(null);
     setRemainingEmotions([]);
     setNextEmotionOffer(null);
+    setTextInput(input);
     setAnimKey((k) => k + 1);
-    // textInput 保持不变，步骤1 textarea 会预填用户刚写的内容
+  }
+
+  function handleStep9Complete() {
+    setCompletionMessage("这次释放完成了。");
+    setCompleted(true);
   }
 
   function handleStartNextEmotion(emotion: IdentifiedEmotion, remaining: IdentifiedEmotion[]) {
@@ -463,7 +593,29 @@ export default function SessionPage() {
         <div className="max-w-md w-full text-center space-y-6 step-animate">
           <div className="text-3xl text-muted-foreground">✦</div>
           <h2 className="text-xl font-medium">{completionMessage}</h2>
-          <p className="text-muted-foreground text-sm">释放完成</p>
+
+          {summaryEntries.length > 0 && (
+            <div className="text-left space-y-3 pt-1">
+              <p className="text-xs text-muted-foreground uppercase tracking-widest">这次你释放了</p>
+              {summaryEntries.map((entry, i) => (
+                <div key={i} className="border border-border rounded-xl px-4 py-3 space-y-1.5">
+                  <p className="text-sm font-medium text-foreground">
+                    {entry.emotion.level}
+                    {entry.emotion.words.length > 0 && (
+                      <span className="font-normal text-muted-foreground"> · {entry.emotion.words.join("、")}</span>
+                    )}
+                  </p>
+                  {entry.wants.length > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      背后的想要：{entry.wants.map((w) => w.label).join("、")}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <FeedbackForm />
           <div className="flex flex-col gap-3 pt-2">
             <Button onClick={() => {
               setSession(createInitialSession());
@@ -577,15 +729,68 @@ export default function SessionPage() {
           {/* 已识别情绪标签 */}
           {session.identifiedEmotion && step > 1 && (
             <div className="space-y-2">
-              <span className="inline-block text-sm font-semibold px-3 py-1 rounded-full bg-primary/12 text-primary border border-primary/25">
-                {session.identifiedEmotion.level}
-                {session.identifiedEmotion.words[0] && `：${session.identifiedEmotion.words[0]}`}
-              </span>
-              {session.identifiedEmotion.words.length > 1 && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="inline-block text-sm font-semibold px-3 py-1 rounded-full bg-primary/12 text-primary border border-primary/25">
+                  {session.identifiedEmotion.level}
+                  {session.identifiedEmotion.words[0] && `：${session.identifiedEmotion.words[0]}`}
+                  {session.identifiedEmotion.wordsEn?.[0] && (
+                    <span className="font-normal opacity-55 ml-1">({session.identifiedEmotion.wordsEn[0]})</span>
+                  )}
+                </span>
+                {!correctionMode && (
+                  <button
+                    onClick={() => setCorrectionMode("input")}
+                    className="text-xs text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+                  >
+                    不准确？
+                  </button>
+                )}
+              </div>
+              {session.identifiedEmotion.words.length > 1 && !correctionMode && (
                 <div className="flex gap-2 flex-wrap">
-                  {session.identifiedEmotion.words.slice(1).map((w) => (
-                    <span key={w} className="text-xs px-2.5 py-0.5 rounded-full bg-muted text-foreground/70">{w}</span>
+                  {session.identifiedEmotion.words.slice(1).map((w, i) => (
+                    <span key={w} className="text-xs px-2.5 py-0.5 rounded-full bg-muted text-foreground/70">
+                      {w}
+                      {session.identifiedEmotion!.wordsEn?.[i + 1] && (
+                        <span className="opacity-55 ml-1">({session.identifiedEmotion!.wordsEn![i + 1]})</span>
+                      )}
+                    </span>
                   ))}
+                </div>
+              )}
+
+              {/* 纠正：重新描述 */}
+              {correctionMode === "input" && (
+                <div className="space-y-2 pt-1">
+                  <textarea
+                    className="w-full text-sm rounded-lg border border-border bg-background px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-primary/40"
+                    placeholder="重新描述你的感受，AI 会重新识别……"
+                    rows={2}
+                    value={correctionInput}
+                    onChange={(e) => setCorrectionInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleCorrectionSubmit(); } }}
+                  />
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={handleCorrectionSubmit} disabled={!correctionInput.trim() || loading}>
+                      {loading ? "识别中…" : "重新识别"}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setCorrectionMode("picker")}>
+                      自己选
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => { setCorrectionMode(null); setCorrectionInput(""); }}>
+                      取消
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* 纠正：手动选择 */}
+              {correctionMode === "picker" && (
+                <div className="pt-1">
+                  <EmotionPicker
+                    onSelect={handleCorrectionPick}
+                    onCancel={() => setCorrectionMode(null)}
+                  />
                 </div>
               )}
             </div>
@@ -596,16 +801,177 @@ export default function SessionPage() {
             <p className="text-base text-foreground/80 leading-relaxed">{session.aiMessage}</p>
           )}
 
-          {/* 步骤1：输入 */}
-          {step === 1 && !emotionSelection && (
-            <StepOpenText
-              question="此刻你有什么感受？"
-              placeholder="可以描述最近发生的一件事、一直在脑海里转的念头，或是身体某个部位的感觉……"
-              value={textInput}
-              onChange={setTextInput}
-              onSubmit={handleStep1Submit}
-              loading={loading}
+          {/* 步骤1：AI识别后确认屏 */}
+          {step === 1 && pendingEmotion && !correctionMode && (
+            <div className="space-y-5">
+              <div>
+                <button
+                  onClick={() => { setPendingEmotion(null); setTextInput(lastTextInput); setCorrectionMode(null); setAnimKey((k) => k + 1); }}
+                  className="text-sm text-muted-foreground/50 hover:text-muted-foreground mb-3 flex items-center gap-1 transition-colors"
+                >
+                  ← 继续编辑
+                </button>
+                <p className="text-sm text-muted-foreground mb-3">{session.aiMessage}</p>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="inline-block text-sm font-semibold px-3 py-1 rounded-full bg-primary/12 text-primary border border-primary/25">
+                    {pendingEmotion.level}
+                    {pendingEmotion.words[0] && `：${pendingEmotion.words[0]}`}
+                    {pendingEmotion.wordsEn?.[0] && (
+                      <span className="font-normal opacity-55 ml-1">({pendingEmotion.wordsEn[0]})</span>
+                    )}
+                  </span>
+                  {pendingEmotion.words.slice(1).map((w, i) => (
+                    <span key={w} className="text-xs px-2.5 py-0.5 rounded-full bg-muted text-foreground/70">
+                      {w}
+                      {pendingEmotion.wordsEn?.[i + 1] && (
+                        <span className="opacity-55 ml-1">({pendingEmotion.wordsEn[i + 1]})</span>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <Button className="w-full" onClick={handleConfirmEmotion}>
+                就是这个，开始释放
+              </Button>
+              <div className="flex justify-center gap-4">
+                <button onClick={() => setCorrectionMode("input")} className="text-sm text-muted-foreground/60 hover:text-muted-foreground transition-colors">重新描述</button>
+                <span className="text-muted-foreground/30 text-sm">·</span>
+                <button onClick={() => setCorrectionMode("picker")} className="text-sm text-muted-foreground/60 hover:text-muted-foreground transition-colors">从情绪表选</button>
+                <span className="text-muted-foreground/30 text-sm">·</span>
+                <button onClick={() => setCorrectionMode("self")} className="text-sm text-muted-foreground/60 hover:text-muted-foreground transition-colors">直接输入</button>
+              </div>
+            </div>
+          )}
+
+          {/* 步骤1：确认屏的纠正模式 */}
+          {step === 1 && pendingEmotion && correctionMode === "input" && (
+            <div className="space-y-3">
+              <button onClick={() => setCorrectionMode(null)} className="text-sm text-muted-foreground hover:text-foreground flex items-center gap-1">← 返回</button>
+              <textarea
+                className="w-full text-sm rounded-lg border border-border bg-background px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-primary/40"
+                placeholder="重新描述你的感受……"
+                rows={2}
+                value={correctionInput}
+                onChange={(e) => setCorrectionInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleCorrectionSubmit(); } }}
+              />
+              <Button size="sm" onClick={handleCorrectionSubmit} disabled={!correctionInput.trim() || loading}>
+                {loading ? "识别中…" : "重新识别"}
+              </Button>
+            </div>
+          )}
+          {step === 1 && pendingEmotion && correctionMode === "picker" && (
+            <EmotionPicker onSelect={handleCorrectionPick} onCancel={() => setCorrectionMode(null)} />
+          )}
+          {step === 1 && pendingEmotion && correctionMode === "self" && (
+            <div className="space-y-4">
+              <button onClick={() => setCorrectionMode(null)} className="text-sm text-muted-foreground hover:text-foreground flex items-center gap-1">← 返回</button>
+              <input
+                type="text"
+                className="w-full text-sm rounded-lg border border-border bg-background px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/40"
+                placeholder="用你自己的词……"
+                value={selfInputWord}
+                onChange={(e) => setSelfInputWord(e.target.value)}
+              />
+              <div className="flex flex-wrap gap-2">
+                {EMOTION_LEVELS.map((l) => (
+                  <button key={l.index} onClick={() => setSelfInputLevel(l.index)}
+                    className={`text-xs px-3 py-1.5 rounded-full border transition-all duration-150 ${selfInputLevel === l.index ? "bg-primary text-primary-foreground border-primary" : "border-border hover:border-primary/40"}`}>
+                    {l.name}
+                  </button>
+                ))}
+              </div>
+              <Button size="sm" onClick={() => {
+                if (!selfInputWord.trim() || selfInputLevel === null) return;
+                const level = EMOTION_LEVELS.find((l) => l.index === selfInputLevel)!;
+                handleCorrectionPick({ words: [selfInputWord.trim()], wordsCn: [selfInputWord.trim()], level: level.name as IdentifiedEmotion["level"], levelEn: level.nameEn, levelIndex: level.index as IdentifiedEmotion["levelIndex"], aiReply: "" });
+                setSelfInputWord(""); setSelfInputLevel(null);
+              }} disabled={!selfInputWord.trim() || selfInputLevel === null}>确认</Button>
+            </div>
+          )}
+
+          {/* 步骤1：手动选择情绪 */}
+          {step === 1 && manualEmotionPicker && (
+            <EmotionPicker
+              onSelect={handleManualEmotionSelect}
+              onCancel={() => setManualEmotionPicker(false)}
             />
+          )}
+
+          {/* 步骤1：自行输入情绪（老手模式） */}
+          {step === 1 && selfInputMode && (
+            <div className="space-y-4">
+              <div>
+                <button
+                  onClick={() => { setSelfInputMode(false); setSelfInputWord(""); setSelfInputLevel(null); }}
+                  className="text-sm text-muted-foreground hover:text-foreground mb-3 flex items-center gap-1"
+                >
+                  ← 返回
+                </button>
+                <h2 className="text-xl font-medium leading-snug">你感受到的是什么？</h2>
+              </div>
+              <input
+                type="text"
+                className="w-full text-sm rounded-lg border border-border bg-background px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/40"
+                placeholder="用你自己的词描述，比如：委屈、对自己失望……"
+                value={selfInputWord}
+                onChange={(e) => setSelfInputWord(e.target.value)}
+              />
+              <div>
+                <p className="text-sm text-muted-foreground mb-2">它属于哪个层级？</p>
+                <div className="flex flex-wrap gap-2">
+                  {EMOTION_LEVELS.map((l) => (
+                    <button
+                      key={l.index}
+                      onClick={() => setSelfInputLevel(l.index)}
+                      className={`text-xs px-3 py-1.5 rounded-full border transition-all duration-150 ${
+                        selfInputLevel === l.index
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "border-border hover:border-primary/40 hover:bg-muted/50"
+                      }`}
+                    >
+                      {l.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <Button
+                className="w-full"
+                onClick={handleSelfInputConfirm}
+                disabled={!selfInputWord.trim() || selfInputLevel === null}
+              >
+                开始释放
+              </Button>
+            </div>
+          )}
+
+          {/* 步骤1：输入 */}
+          {step === 1 && !emotionSelection && !manualEmotionPicker && !selfInputMode && !pendingEmotion && (
+            <div className="space-y-3">
+              <StepOpenText
+                question="此刻你有什么感受？"
+                placeholder="可以描述最近发生的一件事、一直在脑海里转的念头，或是身体某个部位的感觉……"
+                value={textInput}
+                onChange={setTextInput}
+                onSubmit={handleStep1Submit}
+                loading={loading}
+              />
+              <div className="flex justify-center gap-4">
+                <button
+                  onClick={() => setManualEmotionPicker(true)}
+                  className="text-sm text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
+                >
+                  从情绪表选
+                </button>
+                <span className="text-muted-foreground/30 text-sm">·</span>
+                <button
+                  onClick={() => setSelfInputMode(true)}
+                  className="text-sm text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
+                >
+                  直接输入
+                </button>
+              </div>
+            </div>
           )}
 
           {/* 步骤1：检测到多种情绪，让用户选择 */}
@@ -631,16 +997,46 @@ export default function SessionPage() {
                   </button>
                 ))}
               </div>
+              <div className="flex justify-center gap-4 pt-1">
+                <button
+                  onClick={() => { setEmotionSelection(null); setTextInput(lastTextInput); }}
+                  className="text-sm text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+                >
+                  重新描述
+                </button>
+                <span className="text-muted-foreground/30 text-sm">·</span>
+                <button
+                  onClick={() => { setEmotionSelection(null); setManualEmotionPicker(true); }}
+                  className="text-sm text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+                >
+                  从情绪表选
+                </button>
+                <span className="text-muted-foreground/30 text-sm">·</span>
+                <button
+                  onClick={() => { setEmotionSelection(null); setSelfInputMode(true); }}
+                  className="text-sm text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+                >
+                  直接输入
+                </button>
+              </div>
             </div>
           )}
 
           {/* 步骤2 */}
           {step === 2 && (
-            <StepYesNo
-              question={`你能允许这份「${emotionLabel}」就这样存在吗？`}
-              subtext="先感受一下——它在身体的哪里？胸口、喉咙、还是别的地方？"
-              onAnswer={handleYesNo}
-            />
+            <div className="space-y-4">
+              <button
+                onClick={() => { setPendingEmotion(session.identifiedEmotion); setTextInput(lastTextInput); updateSession({ currentStep: 1, identifiedEmotion: null }); }}
+                className="text-sm text-muted-foreground/50 hover:text-muted-foreground flex items-center gap-1 transition-colors"
+              >
+                ← 返回
+              </button>
+              <StepYesNo
+                question={`你能允许这份「${emotionLabel}」就这样存在吗？`}
+                subtext="Could you let this feeling be here? · 先感受一下它在身体的哪里"
+                onAnswer={handleYesNo}
+              />
+            </div>
           )}
 
           {/* 步骤3 */}
@@ -656,7 +1052,7 @@ export default function SessionPage() {
           {step === 4 && (
             <StepYesNo
               question={`你愿意让这份「${emotionLabel}」离开吗？`}
-              subtext="Would you?"
+              subtext="Would you let it go?"
               onAnswer={handleYesNo}
             />
           )}
@@ -717,7 +1113,7 @@ export default function SessionPage() {
 
           {/* 步骤7：多选想要 */}
           {step === 7 && !wantReidentifyMode && (
-            <div className="space-y-5">
+            <div className="space-y-5 pb-16">
               <div className="space-y-2">
                 <h2 className="text-xl font-medium">在这份「{emotionLabel}」背后，你最想要的是……</h2>
                 <p className="text-sm text-muted-foreground leading-relaxed">
@@ -765,6 +1161,14 @@ export default function SessionPage() {
                   这些都不太准确，换个角度识别
                 </button>
               )}
+              {!loading && (
+                <button
+                  onClick={handleSkipWants}
+                  className="w-full text-xs text-muted-foreground/40 hover:text-muted-foreground/60 text-center py-1 transition-colors"
+                >
+                  这些都不是，跳过
+                </button>
+              )}
             </div>
           )}
 
@@ -777,6 +1181,7 @@ export default function SessionPage() {
               {wantPhase === "allow" && (
                 <StepYesNo
                   question={`你能允许「${wantLabel}」就这样存在吗？`}
+                  subtext="Could you let this wanting be here?"
                   onAnswer={handleWantPhaseAnswer}
                 />
               )}
@@ -790,7 +1195,7 @@ export default function SessionPage() {
               {wantPhase === "would" && (
                 <StepYesNo
                   question={`你愿意放下「${wantLabel}」吗？`}
-                  subtext="（记住：放下执着不等于放弃拥有）"
+                  subtext="Would you let it go? · 放下执着不等于放弃拥有"
                   onAnswer={handleWantPhaseAnswer}
                 />
               )}
@@ -824,20 +1229,41 @@ export default function SessionPage() {
           )}
 
           {/* 步骤9：可选记录 */}
-          {step === 9 && (
+          {step === 9 && !step9Feedback && (
             <div className="space-y-4">
-              <h2 className="text-xl font-medium leading-snug">有什么想记录的吗？</h2>
-              <p className="text-sm text-muted-foreground">写下此刻的感受或想法——如果还有其他情绪浮现，也可以写，会自动识别是否继续。可以不写，直接完成。</p>
+              <h2 className="text-xl font-medium leading-snug">此刻有什么感受？</h2>
+              <p className="text-sm text-muted-foreground">可以描述身体的反应、浮现的念头，或是什么都没有。不写也可以直接完成。</p>
               <Textarea
-                placeholder="此刻的感受、想法……（可选）"
+                placeholder="比如：打了个哈欠、身体轻了一点、脑子里还有一件事……"
                 value={textInput}
                 onChange={(e) => setTextInput(e.target.value)}
                 rows={4}
                 className="resize-none"
               />
-              <Button className="w-full" onClick={handleStep9Submit}>
-                {textInput.trim() ? "继续释放" : "完成"}
+              <Button className="w-full" onClick={handleStep9Submit} disabled={loading}>
+                {loading ? "感应中……" : textInput.trim() ? "提交" : "完成"}
               </Button>
+            </div>
+          )}
+
+          {/* 步骤9：AI 反馈 */}
+          {step === 9 && step9Feedback && (
+            <div className="space-y-5">
+              <p className="text-base text-foreground/90 leading-relaxed">{step9Feedback.feedback}</p>
+              {step9Feedback.hasNewEmotion ? (
+                <div className="space-y-2">
+                  <Button className="w-full" onClick={handleStep9Continue}>
+                    继续释放新的感受
+                  </Button>
+                  <Button variant="ghost" className="w-full" onClick={handleStep9Complete}>
+                    先到这里，完成
+                  </Button>
+                </div>
+              ) : (
+                <Button className="w-full" onClick={handleStep9Complete}>
+                  完成
+                </Button>
+              )}
             </div>
           )}
           </>}
@@ -877,7 +1303,6 @@ function StepOpenText({
           if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSubmit(); }
         }}
       />
-      <p className="text-xs text-muted-foreground">Enter 提交 · Shift+Enter 换行</p>
       <Button className="w-full" onClick={onSubmit} disabled={!value.trim() || loading}>
         {loading ? "感应中……" : "继续"}
       </Button>

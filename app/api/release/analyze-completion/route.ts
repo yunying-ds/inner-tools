@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 const client = new Anthropic();
 
@@ -8,6 +9,9 @@ type CompletionResult = "new_emotion" | "feeling_better" | "residual_remains" | 
 const FALLBACK = { result: "unclear" as CompletionResult, newEmotionHint: null, message: "感谢你的分享，这轮释放完成了。" };
 
 export async function POST(req: NextRequest) {
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "unknown";
+  if (!checkRateLimit(ip).ok) return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+
   const { userInput, previousEmotion } = await req.json();
 
   try {

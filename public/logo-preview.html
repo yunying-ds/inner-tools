@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { background: #F7F2EC; display: flex; gap: 40px; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .card { display: flex; flex-direction: column; align-items: center; gap: 8px; font-family: sans-serif; color: #7C5240; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <p>原始大小 (512px)</p>
+    <svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+      <g fill="none" stroke="#7C5240" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M96 320 Q140 220 200 200 Q170 260 180 320 Z"/>
+        <path d="M416 320 Q372 220 312 200 Q342 260 332 320 Z"/>
+        <path d="M160 300 Q210 190 256 210 Q220 250 230 300 Z"/>
+        <path d="M352 300 Q302 190 256 210 Q292 250 282 300 Z"/>
+        <path d="M216 290 Q236 170 256 180 Q246 230 246 290 Z"/>
+        <path d="M296 290 Q276 170 256 180 Q266 230 266 290 Z"/>
+      </g>
+    </svg>
+  </div>
+
+  <div class="card">
+    <p>网站尺寸 (128px) + 交替效果</p>
+    <svg viewBox="86 120 340 215" width="128" height="81" fill="none" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+      <g stroke="#7C5240" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M96 320 Q140 220 200 200 Q170 260 180 320 Z" stroke-opacity="0.5"/>
+        <path d="M416 320 Q372 220 312 200 Q342 260 332 320 Z" stroke-opacity="0.5"/>
+        <path d="M160 300 Q210 190 256 210 Q220 250 230 300 Z" stroke-opacity="0.18"/>
+        <path d="M352 300 Q302 190 256 210 Q292 250 282 300 Z" stroke-opacity="0.18"/>
+        <path d="M216 290 Q236 170 256 180 Q246 230 246 290 Z" stroke-opacity="0.48"/>
+        <path d="M296 290 Q276 170 256 180 Q266 230 266 290 Z" stroke-opacity="0.48"/>
+      </g>
+    </svg>
+  </div>
+</body>
+</html>

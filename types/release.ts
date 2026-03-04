@@ -12,8 +12,11 @@ export type EmotionLevel =
 export type EmotionLevelIndex = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 
 export interface IdentifiedEmotion {
-  words: string[];
+  words: string[];      // 中文展示词（context-aware 翻译）
+  wordsEn?: string[];   // 官方英文原词
+  wordsCn?: string[];   // 同 words，AI 输出字段名
   level: EmotionLevel;
+  levelEn?: string;     // 英文层级名
   levelIndex: EmotionLevelIndex;
   aiReply: string;
 }

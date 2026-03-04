@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
 
 export default function Home() {
@@ -6,9 +7,19 @@ export default function Home() {
     <div className="min-h-screen flex items-center justify-center bg-background px-4 py-12">
       <div className="max-w-sm w-full space-y-10">
         <div className="space-y-2 text-center">
+          <div className="flex justify-center">
+            <Image src="/logo-brand-cropped.png" alt="Inner Tools" width={96} height={96} className="[filter:brightness(0)_saturate(100%)_invert(30%)_sepia(60%)_saturate(500%)_hue-rotate(350deg)_brightness(80%)]" />
+          </div>
           <h1 className="text-2xl font-medium tracking-tight">Inner Tools</h1>
           <p className="text-sm text-muted-foreground">内在工具箱</p>
         </div>
+
+        {/* 引言 */}
+        <p className="text-xs text-muted-foreground/70 leading-relaxed border-l-2 border-border pl-3 italic">
+          「你必须要想要自由，大于想要被认可、掌控，或安全感。」
+          <br />
+          <span className="not-italic">—— Lester Levenson</span>
+        </p>
 
         {/* 圣多纳方法介绍 */}
         <div className="space-y-4">
@@ -21,7 +32,7 @@ export default function Home() {
           <div className="space-y-2 text-sm text-muted-foreground">
             <div className="flex gap-2.5">
               <span className="text-primary/60 shrink-0">1.</span>
-              <span>说出此刻的感受，AI 帮你识别情绪</span>
+              <span>看见此刻的感受——借助辅助工具识别，或直接感受</span>
             </div>
             <div className="flex gap-2.5">
               <span className="text-primary/60 shrink-0">2.</span>
@@ -49,6 +60,10 @@ export default function Home() {
             </Button>
           </Link>
         </div>
+
+        <p className="text-xs text-muted-foreground/50 text-center leading-relaxed">
+          此网站不收集任何个人数据。你填写的内容仅在当次会话中使用，不做其他用途。
+        </p>
 
         <p className="text-xs text-muted-foreground text-center">塔罗功能即将上线</p>
       </div>

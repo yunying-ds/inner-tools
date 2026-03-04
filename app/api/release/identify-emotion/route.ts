@@ -1,79 +1,120 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
 import { buildEmotionTableText } from "@/lib/release/emotions";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 const client = new Anthropic();
 const EMOTION_TABLE = buildEmotionTableText();
 
+const emotionSchema = {
+  type: "object" as const,
+  properties: {
+    wordsEn: {
+      type: "array",
+      description: "1-2 English keywords selected from the official table",
+      items: { type: "string" },
+    },
+    wordsCn: {
+      type: "array",
+      description: "Context-aware Chinese translations of the English keywords, informed by user's specific situation (not mechanical dictionary translation)",
+      items: { type: "string" },
+    },
+    level: { type: "string", description: "Chinese level name: 冷漠/悲伤/恐惧/欲望/愤怒/骄傲/勇气/接纳/平静" },
+    levelEn: { type: "string", description: "English level name: Apathy/Grief/Fear/Lust/Anger/Pride/Courageousness/Acceptance/Peace" },
+    levelIndex: { type: "number", description: "Level index 1-9" },
+    aiReply: { type: "string", description: "Warm, brief acknowledgment in Chinese" },
+    allEmotions: {
+      type: "array",
+      description: "Only when multiple distinct emotion levels detected",
+      items: {
+        type: "object",
+        properties: {
+          wordsEn: { type: "array", items: { type: "string" } },
+          wordsCn: { type: "array", items: { type: "string" } },
+          level: { type: "string" },
+          levelEn: { type: "string" },
+          levelIndex: { type: "number" },
+        },
+        required: ["wordsEn", "wordsCn", "level", "levelEn", "levelIndex"],
+      },
+    },
+  },
+  required: ["wordsEn", "wordsCn", "level", "levelEn", "levelIndex", "aiReply"],
+};
+
 export async function POST(req: NextRequest) {
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "unknown";
+  if (!checkRateLimit(ip).ok) return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+
   const { userInput } = await req.json();
 
   try {
     const message = await client.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 700,
+      max_tokens: 800,
+      tools: [
+        {
+          name: "identify_emotion",
+          description: "Identify the emotion level(s) from the Sedona Method chart based on user input",
+          input_schema: emotionSchema,
+        },
+      ],
+      tool_choice: { type: "tool", name: "identify_emotion" },
       messages: [
         {
           role: "user",
-          content: `你是圣多纳释放法的引导师。请根据用户描述，从官方情绪表中识别情绪。
+          content: `You are a Sedona Method facilitator. Identify the emotion(s) from the official AGFLAP-CAP chart.
 
-官方情绪表：
+Official emotion chart:
 ${EMOTION_TABLE}
 
-用户描述："${userInput}"
+User's description: "${userInput}"
 
-请返回 JSON 格式（不要包含其他文字）：
-{
-  "words": ["属于主要 level 的词，最多2个"],
-  "level": "主要情绪层级",
-  "levelIndex": 对应序号,
-  "aiReply": "温和的反馈",
-  "allEmotions": [可选，见下方说明]
-}
-
-规则：
-- words：必填，1-2个。从该 level 的关键词表中选取最贴近用户描述的词；若无完全匹配，选近义词或用简短自然语言描述（3字以内），但语义必须属于该 level
-- level：从冷漠/悲伤/恐惧/欲望/愤怒/骄傲/勇气/接纳/平静中选最主要的那个
-- levelIndex：冷漠=1，悲伤=2，恐惧=3，欲望=4，愤怒=5，骄傲=6，勇气=7，接纳=8，平静=9
-- aiReply：若情绪单一，用"听起来你现在感到……"；若情绪混合，用"我感受到……和……交织在一起"
-- allEmotions（仅在检测到来自不同层级的多种情绪时填写）：列出所有检测到的情绪，每项格式为 {"words": [...], "level": "...", "levelIndex": 数字}，每项的 words 只填属于该项 level 的词
-
-示例（单一情绪）：
-用户说"我感到很焦虑，不知道该怎么办"时，应返回：
-{
-  "words": ["焦虑", "不确定"],
-  "level": "恐惧",
-  "levelIndex": 3,
-  "aiReply": "听起来你现在感到焦虑和不确定。"
-}
-
-示例（混合情绪）：
-用户说"既害怕又很期待"时，应返回：
-{
-  "words": ["担心"],
-  "level": "恐惧",
-  "levelIndex": 3,
-  "aiReply": "我感受到恐惧和期待交织在一起",
-  "allEmotions": [
-    {"words": ["担心"], "level": "恐惧", "levelIndex": 3},
-    {"words": ["期待"], "level": "欲望", "levelIndex": 4}
-  ]
-}`,
+Instructions:
+1. Select 1-2 English keywords from the chart that best match the user's state
+2. Translate them to Chinese based on the USER'S SPECIFIC CONTEXT — not a mechanical dictionary translation. For example, "dread" might become "恐惧" for a medical situation, "忐忑" for a job interview, or "不敢想" for something traumatic.
+3. Identify the primary emotion level
+4. If multiple distinct levels are present (e.g., both Fear and Anger), list all in allEmotions
+5. aiReply: warm, brief Chinese acknowledgment (1 sentence). Single emotion: "听起来你现在感到……"; Mixed: "我感受到……和……交织在一起"
+6. Keep wordsCn natural and resonant — the user should recognize themselves in the words`,
         },
       ],
     });
 
-    const text = message.content[0].type === "text" ? message.content[0].text : "";
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return NextResponse.json({ words: [], level: "恐惧", levelIndex: 3, aiReply: `听起来你现在感到${userInput.slice(0, 20)}。` });
+    const toolUse = message.content.find((c) => c.type === "tool_use");
+    if (!toolUse || toolUse.type !== "tool_use") {
+      return NextResponse.json({
+        wordsEn: [],
+        wordsCn: [],
+        words: [],
+        level: "恐惧",
+        levelEn: "Fear",
+        levelIndex: 3,
+        aiReply: "我听到了你的描述，让我们继续。",
+      });
     }
-    return NextResponse.json(JSON.parse(jsonMatch[0]));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = toolUse.input as any;
+
+    // 向下兼容：保留 `words` 字段（session-client.tsx 用它展示）
+    return NextResponse.json({
+      ...result,
+      words: result.wordsCn ?? result.wordsEn ?? [],
+      // allEmotions 同样补充 words 字段
+      allEmotions: result.allEmotions?.map((e: { wordsCn?: string[]; wordsEn?: string[]; words?: string[] }) => ({
+        ...e,
+        words: e.wordsCn ?? e.wordsEn ?? [],
+      })),
+    });
   } catch (e) {
     console.error("[identify-emotion]", e);
     return NextResponse.json({
+      wordsEn: [],
+      wordsCn: [],
       words: [],
       level: "恐惧",
+      levelEn: "Fear",
       levelIndex: 3,
       aiReply: "我听到了你的描述。让我们继续这个过程。",
       _aiUnavailable: true,
