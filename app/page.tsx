@@ -8,7 +8,9 @@ export default function Home() {
       <div className="max-w-sm w-full space-y-10">
         <div className="space-y-2 text-center">
           <div className="flex justify-center">
-            <Image src="/logo-brand-cropped.png" alt="Inner Tools" width={96} height={96} className="[filter:brightness(0)_saturate(100%)_invert(30%)_sepia(60%)_saturate(500%)_hue-rotate(350deg)_brightness(80%)]" />
+            <div className="relative w-16 h-16">
+              <Image src="/logo-brand-cropped.png" alt="Inner Tools" fill style={{ objectFit: "contain" }} className="[filter:sepia(1)_saturate(2.5)_hue-rotate(350deg)_brightness(1.35)]" />
+            </div>
           </div>
           <h1 className="text-2xl font-medium tracking-tight">Inner Tools</h1>
           <p className="text-sm text-muted-foreground">内在工具箱</p>
