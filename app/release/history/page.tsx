@@ -17,6 +17,14 @@ function formatDate(ts: number): string {
 export default function HistoryPage() {
   const router = useRouter();
   const [history, setHistory] = useState<SavedSession[]>([]);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  function handleDelete(id: string) {
+    const updated = history.filter((s) => s.id !== id);
+    setHistory(updated);
+    localStorage.setItem("release_history", JSON.stringify(updated));
+    setConfirmDeleteId(null);
+  }
 
   useEffect(() => {
     const stored = localStorage.getItem("release_history");
@@ -53,9 +61,22 @@ export default function HistoryPage() {
                       <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">中止</span>
                     )}
                   </div>
-                  <span className="text-xs text-muted-foreground">
-                    {formatDate(s.startedAt)}
-                  </span>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <span className="text-xs text-muted-foreground">{formatDate(s.startedAt)}</span>
+                    {confirmDeleteId === s.id ? (
+                      <span className="flex items-center gap-2 text-xs">
+                        <button onClick={() => handleDelete(s.id)} className="text-destructive hover:text-destructive/80 transition-colors">确认</button>
+                        <button onClick={() => setConfirmDeleteId(null)} className="text-muted-foreground/50 hover:text-muted-foreground transition-colors">取消</button>
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmDeleteId(s.id)}
+                        className="text-xs text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors"
+                      >
+                        删除
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <p className="text-xs text-muted-foreground">{s.summary}</p>
                 {s.exitReason && (

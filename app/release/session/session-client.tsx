@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { v4 as uuidv4 } from "uuid";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Slider } from "@/components/ui/slider";
 import { Progress } from "@/components/ui/progress";
 import type { SessionState, WantOption, SavedSession, IdentifiedEmotion } from "@/types/release";
 import { FeedbackForm } from "@/components/release/FeedbackForm";
@@ -14,7 +13,7 @@ import { EMOTION_LEVELS } from "@/lib/release/emotions";
 
 const TOTAL_STEPS = 9;
 const LOOP_WARNING_THRESHOLD = 3;
-const MAX_LOOPS = 3;
+const MAX_LOOPS = 5;
 
 function createInitialSession(): SessionState {
   return {
@@ -54,27 +53,16 @@ function getProgress(step: number): number {
 const STEP_STAGE: Record<number, string> = {
   1: "感受觉察", 2: "感受觉察",
   3: "基础释放", 4: "基础释放", 5: "基础释放",
-  6: "评估", 7: "深层想要", 8: "深层释放", 9: "整合",
+  6: "评估", 7: "深层想要", 9: "整合",
 };
-
-type WantPhase = "allow" | "could" | "would" | "when";
-const WANT_PHASES: WantPhase[] = ["allow", "could", "would", "when"];
 
 export default function SessionPage() {
   const router = useRouter();
   const [session, setSession] = useState<SessionState>(createInitialSession);
   const [textInput, setTextInput] = useState("");
-  const [sliderValue, setSliderValue] = useState([5]);
   const [loading, setLoading] = useState(false);
   const [completed, setCompleted] = useState(false);
   const [completionMessage, setCompletionMessage] = useState("");
-  const [askLoopAgain, setAskLoopAgain] = useState(false);
-  const [wantPhaseIndex, setWantPhaseIndex] = useState(0);
-  const [wantLoopCount, setWantLoopCount] = useState(0);
-  const [wantCheckPhase, setWantCheckPhase] = useState<null | "same" | "others">(null);
-  // 多选想要：按用户点击顺序排序（index 0 = 最强烈）
-  const [rankedWants, setRankedWants] = useState<WantOption[]>([]);
-  const [currentWantRankIndex, setCurrentWantRankIndex] = useState(0);
   const [animKey, setAnimKey] = useState(0);
   const [apiError, setApiError] = useState<string | null>(null);
   const [emotionSelection, setEmotionSelection] = useState<IdentifiedEmotion[] | null>(null);
@@ -95,6 +83,7 @@ export default function SessionPage() {
   const [selfInputWord, setSelfInputWord] = useState("");
   const [selfInputLevel, setSelfInputLevel] = useState<number | null>(null);
   const [summaryEntries, setSummaryEntries] = useState<{ emotion: IdentifiedEmotion; wants: WantOption[] }[]>([]);
+  const [wantTapCounts, setWantTapCounts] = useState<Record<string, number>>({});
 
   function captureEntry(emotion: IdentifiedEmotion | null, wants: WantOption[]) {
     if (!emotion) return;
@@ -242,7 +231,7 @@ export default function SessionPage() {
   }
 
   function handleExitConfirm() {
-    captureEntry(session.identifiedEmotion, rankedWants);
+    captureEntry(session.identifiedEmotion, session.generatedWants);
     const saved: SavedSession = {
       id: session.id,
       startedAt: session.startedAt,
@@ -286,41 +275,18 @@ export default function SessionPage() {
   }
 
   // ---- 步骤6 ----
-  function handleScoreSubmit() {
-    const score = sliderValue[0];
-    const newHistory = [...session.history, { stepId: 6, question: "此刻强度评分（0-10）", answer: score, timestamp: Date.now() }];
-    // 和上一轮评分比较，判断是否有改善
-    const prevScores = session.history.filter(h => h.stepId === 6).map(h => Number(h.answer));
-    const lastScore = prevScores.at(-1) ?? null;
-    const notImproving = lastScore !== null && score >= lastScore;
-    if (score >= 5) {
+  function handleStep6Answer(hasMore: boolean) {
+    const answer = hasMore ? "还有" : "没有了";
+    const newHistory = [...session.history, { stepId: 6, question: `这份「${emotionLevel}」还有吗？`, answer, timestamp: Date.now() }];
+    if (hasMore) {
       const newLoopCount = session.loopCount + 1;
-      if (notImproving || newLoopCount >= MAX_LOOPS) {
-        updateSession({ intensityScore: score, loopCount: newLoopCount, history: newHistory, aiMessage: "感受没有减轻，说明它可能有更深层的根源，让我们换个角度来处理", currentStep: 7 });
+      if (newLoopCount >= MAX_LOOPS) {
+        updateSession({ loopCount: newLoopCount, history: newHistory, aiMessage: "感受持续存在，说明它可能有更深层的根源，让我们看看背后深层的渴望", currentStep: 7 });
       } else {
-        updateSession({ intensityScore: score, loopCount: newLoopCount, history: newHistory, aiMessage: "嗯，还有一些，让我们再来一轮", currentStep: 3 });
-      }
-      setSliderValue([5]);
-    } else if (score >= 3) {
-      if (notImproving) {
-        updateSession({ intensityScore: score, history: newHistory, aiMessage: "感受的强度变化不大，让我们试试更深层的释放", currentStep: 7 });
-      } else {
-        setSession((prev) => ({ ...prev, intensityScore: score, history: newHistory }));
-        setAskLoopAgain(true);
-        setAnimKey((k) => k + 1);
+        updateSession({ loopCount: newLoopCount, history: newHistory, aiMessage: "嗯，还有一些，让我们再来一轮", currentStep: 3 });
       }
     } else {
-      updateSession({ intensityScore: score, history: newHistory, aiMessage: "很好，感受轻了不少", currentStep: 7 });
-    }
-  }
-
-  function handleLoopAgain(again: boolean) {
-    setAskLoopAgain(false);
-    if (again) {
-      updateSession({ loopCount: session.loopCount + 1, aiMessage: "好的，我们再来一轮", currentStep: 3 });
-      setSliderValue([5]);
-    } else {
-      updateSession({ currentStep: 7, aiMessage: null });
+      updateSession({ history: newHistory, currentStep: 7, aiMessage: null });
     }
   }
 
@@ -342,6 +308,13 @@ export default function SessionPage() {
       updateSession({ generatedWants: Array.isArray(data.wants) ? data.wants : [] });
     } catch (e) {
       console.error(e);
+      updateSession({
+        generatedWants: [
+          { label: "想要被认同/被爱", description: "你想要被理解、被看见、被认同、被爱吗？" },
+          { label: "想要控制", description: "你想要控制局面、让一切按你的计划进行吗？" },
+          { label: "想要安全/生存", description: "你担心失去某些重要的东西、害怕未来没有保障吗？" },
+        ],
+      });
     } finally {
       setLoading(false);
     }
@@ -352,110 +325,29 @@ export default function SessionPage() {
     const input = wantReidentifyInput;
     setWantReidentifyMode(false);
     setWantReidentifyInput("");
-    setRankedWants([]);
     updateSession({ generatedWants: [] });
     await loadWantOptions(input);
   }
 
-  function handleToggleWant(want: WantOption) {
-    setRankedWants((prev) => {
-      const idx = prev.findIndex((w) => w.label === want.label);
-      return idx >= 0 ? prev.filter((_, i) => i !== idx) : [...prev, want];
-    });
-  }
-
-  function handleConfirmWants() {
-    if (rankedWants.length === 0) return;
-    const history = [...session.history, {
+  function handleWantTap(want: WantOption) {
+    const newHistory = [...session.history, {
       stepId: 7,
-      question: "在这个感受背后，你最想要的是：",
-      answer: rankedWants.map((w) => w.label).join("、"),
+      question: "释放想要：",
+      answer: want.label,
       timestamp: Date.now(),
     }];
-    setCurrentWantRankIndex(0);
-    setWantPhaseIndex(0);
-    setWantCheckPhase(null);
-    updateSession({ selectedWant: rankedWants[0], history, currentStep: 8 });
+    setWantTapCounts((prev) => ({ ...prev, [want.label]: (prev[want.label] ?? 0) + 1 }));
+    updateSession({ selectedWant: want, history: newHistory });
   }
 
-  // ---- 步骤8 子阶段 ----
-  function handleWantPhaseAnswer(answer: "是" | "否") {
-    const phase = WANT_PHASES[wantPhaseIndex];
-    const wantLabel = session.selectedWant?.label ?? "这个想要";
-    const questions: Record<WantPhase, string> = {
-      allow: `你能允许「${wantLabel}」就这样存在吗？`,
-      could: `你能让「${wantLabel}」离开吗？`,
-      would: `你愿意放下「${wantLabel}」吗？`,
-      when: "",
-    };
-    const newHistory = [...session.history, { stepId: 8, question: questions[phase], answer, timestamp: Date.now() }];
-    if (wantPhaseIndex < WANT_PHASES.length - 1) {
-      setWantPhaseIndex((i) => i + 1);
-      setSession((prev) => ({ ...prev, history: newHistory }));
-      setAnimKey((k) => k + 1);
+  function handleFinishWants() {
+    captureEntry(session.identifiedEmotion, session.generatedWants);
+    saveSessionToHistory({ ...session, status: "completed" });
+    if (remainingEmotions.length > 0) {
+      setNextEmotionOffer(remainingEmotions[0]);
+      setRemainingEmotions(remainingEmotions.slice(1));
     } else {
-      setSession((prev) => ({ ...prev, history: newHistory }));
-      setWantCheckPhase("same");
-      setAnimKey((k) => k + 1);
-    }
-  }
-
-  function handleWantWhen(answer: "现在" | "稍后") {
-    const newHistory = [...session.history, { stepId: 8, question: "什么时候？", answer, timestamp: Date.now() }];
-    setSession((prev) => ({ ...prev, history: newHistory }));
-    setWantCheckPhase("same");
-    setAnimKey((k) => k + 1);
-  }
-
-  const MAX_WANT_LOOPS = 3;
-
-  // ---- 步骤8 想要检查 ----
-  function handleWantCheckSame(answer: "是" | "否") {
-    if (answer === "是") {
-      const newCount = wantLoopCount + 1;
-      if (newCount >= MAX_WANT_LOOPS) {
-        // 循环次数达到上限，进入下一个想要或步骤9
-        setWantLoopCount(0);
-        setWantCheckPhase("others");
-        setAnimKey((k) => k + 1);
-      } else {
-        setWantLoopCount(newCount);
-        setWantPhaseIndex(0);
-        setWantCheckPhase(null);
-        setAnimKey((k) => k + 1);
-      }
-    } else {
-      setWantCheckPhase("others");
-      setAnimKey((k) => k + 1);
-    }
-  }
-
-  function handleWantCheckOthers(answer: "是" | "否") {
-    const nextRankIndex = currentWantRankIndex + 1;
-    const nextWant = rankedWants[nextRankIndex];
-    if (answer === "是" && nextWant) {
-      setCurrentWantRankIndex(nextRankIndex);
-      setWantPhaseIndex(0);
-      setWantLoopCount(0);
-      setWantCheckPhase(null);
-      updateSession({ selectedWant: nextWant, currentStep: 8 });
-    } else if (answer === "是") {
-      // 用完了排好的，让用户重新选
-      setRankedWants([]);
-      setCurrentWantRankIndex(0);
-      setWantPhaseIndex(0);
-      setWantCheckPhase(null);
-      updateSession({ selectedWant: null, currentStep: 7, aiMessage: "还有其他的想要，重新选择" });
-    } else {
-      setWantCheckPhase(null);
-      captureEntry(session.identifiedEmotion, rankedWants);
-      saveSessionToHistory({ ...session, status: "completed" });
-      if (remainingEmotions.length > 0) {
-        setNextEmotionOffer(remainingEmotions[0]);
-        setRemainingEmotions(remainingEmotions.slice(1));
-      } else {
-        updateSession({ currentStep: 9, aiMessage: null });
-      }
+      updateSession({ currentStep: 9, aiMessage: null });
     }
   }
 
@@ -501,12 +393,6 @@ export default function SessionPage() {
     const input = textInput;
     setStep9Feedback(null);
     setSession({ ...createInitialSession(), aiMessage: "有新的感受浮现，让我们继续。" });
-    setSliderValue([5]);
-    setWantPhaseIndex(0);
-    setWantLoopCount(0);
-    setWantCheckPhase(null);
-    setRankedWants([]);
-    setCurrentWantRankIndex(0);
     setEmotionSelection(null);
     setRemainingEmotions([]);
     setNextEmotionOffer(null);
@@ -529,21 +415,12 @@ export default function SessionPage() {
       currentStep: 2,
     });
     setTextInput("");
-    setSliderValue([5]);
-    setWantPhaseIndex(0);
-    setWantLoopCount(0);
-    setWantCheckPhase(null);
-    setRankedWants([]);
-    setCurrentWantRankIndex(0);
     setAnimKey((k) => k + 1);
   }
 
   const step = session.currentStep;
-  const wantPhase = WANT_PHASES[wantPhaseIndex];
   const emotionLevel = session.identifiedEmotion?.level ?? "感受";
   const emotionLabel = session.identifiedEmotion?.words.find((w) => w.trim()) || emotionLevel;
-  const wantLabel = session.selectedWant?.label ?? "这个想要";
-  const nextRankedWant = rankedWants[currentWantRankIndex + 1];
 
   // ---- 下一个情绪提示页 ----
   if (nextEmotionOffer) {
@@ -621,12 +498,6 @@ export default function SessionPage() {
               setSession(createInitialSession());
               setCompleted(false);
               setTextInput("");
-              setSliderValue([5]);
-              setWantPhaseIndex(0);
-              setWantLoopCount(0);
-              setWantCheckPhase(null);
-              setRankedWants([]);
-              setCurrentWantRankIndex(0);
               setEmotionSelection(null);
               setRemainingEmotions([]);
               setNextEmotionOffer(null);
@@ -950,7 +821,7 @@ export default function SessionPage() {
             <div className="space-y-3">
               <StepOpenText
                 question="此刻你有什么感受？"
-                placeholder="可以描述最近发生的一件事、一直在脑海里转的念头，或是身体某个部位的感觉……"
+                placeholder="可以描述最近发生的一件事、一直在脑海里转的念头，身体某个部位的感觉，或是对某个目标的感受……"
                 value={textInput}
                 onChange={setTextInput}
                 onSubmit={handleStep1Submit}
@@ -1036,64 +907,75 @@ export default function SessionPage() {
                 subtext="Could you let this feeling be here? · 先感受一下它在身体的哪里"
                 onAnswer={handleYesNo}
               />
+              <button
+                onClick={() => updateSession({ currentStep: 7 })}
+                className="w-full text-xs text-muted-foreground/40 hover:text-muted-foreground/60 text-center py-1 transition-colors"
+              >
+                跳过，直接识别「三大想要」
+              </button>
             </div>
           )}
 
           {/* 步骤3 */}
           {step === 3 && (
-            <StepYesNo
-              question={`你能让这份「${emotionLabel}」离开吗？`}
-              subtext="Could you let it go?"
-              onAnswer={handleYesNo}
-            />
+            <div className="space-y-4">
+              <StepYesNo
+                question={`你能让这份「${emotionLabel}」离开吗？`}
+                subtext="Could you let it go?"
+                onAnswer={handleYesNo}
+              />
+              <button
+                onClick={() => updateSession({ currentStep: 7 })}
+                className="w-full text-xs text-muted-foreground/40 hover:text-muted-foreground/60 text-center py-1 transition-colors"
+              >
+                跳过，直接识别「三大想要」
+              </button>
+            </div>
           )}
 
           {/* 步骤4 */}
           {step === 4 && (
-            <StepYesNo
-              question={`你愿意让这份「${emotionLabel}」离开吗？`}
-              subtext="Would you let it go?"
-              onAnswer={handleYesNo}
-            />
+            <div className="space-y-4">
+              <StepYesNo
+                question={`你愿意让这份「${emotionLabel}」离开吗？`}
+                subtext="Would you let it go?"
+                onAnswer={handleYesNo}
+              />
+              <button
+                onClick={() => updateSession({ currentStep: 7 })}
+                className="w-full text-xs text-muted-foreground/40 hover:text-muted-foreground/60 text-center py-1 transition-colors"
+              >
+                跳过，直接识别「三大想要」
+              </button>
+            </div>
           )}
 
           {/* 步骤5 */}
           {step === 5 && (
-            <StepWhen
-              note={`即使外部情况没变，内心的「${emotionLabel}」可以现在就松开。`}
-              onAnswer={handleChoice2}
-            />
-          )}
-
-          {/* 步骤6：强度评分 */}
-          {step === 6 && !askLoopAgain && (
-            <div className="space-y-8">
-              <div className="space-y-2">
-                <h2 className="text-xl font-medium">此刻这份「{emotionLabel}」的强度是？</h2>
-                <p className="text-sm text-muted-foreground">0 = 完全没有，10 = 非常强烈</p>
-              </div>
-              <div className="space-y-4">
-                <Slider min={0} max={10} step={1} value={sliderValue} onValueChange={setSliderValue} className="w-full" />
-                <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>0</span>
-                  <span className="text-foreground font-semibold text-lg">{sliderValue[0]}</span>
-                  <span>10</span>
-                </div>
-              </div>
-              {session.loopCount >= LOOP_WARNING_THRESHOLD && (
-                <p className="text-xs text-muted-foreground">这个议题可能比较深层，你也可以先停下来，让自己休息一下。</p>
-              )}
-              <Button className="w-full" onClick={handleScoreSubmit}>继续</Button>
+            <div className="space-y-4">
+              <StepWhen
+                note={`即使外部情况没变，内心的「${emotionLabel}」可以现在就松开。`}
+                onAnswer={handleChoice2}
+              />
+              <button
+                onClick={() => updateSession({ currentStep: 7 })}
+                className="w-full text-xs text-muted-foreground/40 hover:text-muted-foreground/60 text-center py-1 transition-colors"
+              >
+                跳过，直接识别「三大想要」
+              </button>
             </div>
           )}
 
-          {/* 步骤6：再来一轮？ */}
-          {step === 6 && askLoopAgain && (
-            <div className="space-y-6">
-              <h2 className="text-xl font-medium">还有一些残留，要再释放一轮吗？</h2>
+          {/* 步骤6 */}
+          {step === 6 && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-medium">这份「{emotionLabel}」还有吗？</h2>
+              {session.loopCount >= LOOP_WARNING_THRESHOLD && (
+                <p className="text-xs text-muted-foreground">这个议题可能比较深层，你也可以先停下来，让自己休息一下。</p>
+              )}
               <div className="flex gap-3">
-                <Button className="flex-1" onClick={() => handleLoopAgain(true)}>是的</Button>
-                <Button className="flex-1" variant="outline" onClick={() => handleLoopAgain(false)}>不了，继续</Button>
+                <Button className="flex-1" onClick={() => handleStep6Answer(true)}>还有，继续释放</Button>
+                <Button variant="outline" className="flex-1" onClick={() => handleStep6Answer(false)}>没有了，下一步</Button>
               </div>
             </div>
           )}
@@ -1111,121 +993,58 @@ export default function SessionPage() {
             />
           )}
 
-          {/* 步骤7：多选想要 */}
+          {/* 步骤7：想要释放循环 */}
           {step === 7 && !wantReidentifyMode && (
             <div className="space-y-5 pb-16">
               <div className="space-y-2">
                 <h2 className="text-xl font-medium">在这份「{emotionLabel}」背后，你最想要的是……</h2>
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  情绪背后往往藏着某种渴望——比如想被认可、想有安全感、想掌控局面。释放这个渴望本身，情绪往往会自然松动。
-                </p>
-                <p className="text-xs text-muted-foreground/70">
-                  可以多选，按强烈程度依次点击（第1个最强烈）
+                  点击你此刻感受到的渴望，每次点击即是一次释放。可以反复点击，直到感觉轻了再完成。
                 </p>
               </div>
               {loading && <p className="text-sm text-muted-foreground">正在感应……</p>}
               {session.generatedWants.map((w) => {
-                const rankIdx = rankedWants.findIndex((r) => r.label === w.label);
-                const rank = rankIdx >= 0 ? rankIdx + 1 : null;
+                const count = wantTapCounts[w.label] ?? 0;
                 return (
                   <button
                     key={w.label}
-                    onClick={() => handleToggleWant(w)}
-                    className={[
-                      "w-full text-left p-4 rounded-xl border transition-all duration-200 space-y-1.5 relative",
-                      rank !== null
-                        ? "border-primary/50 bg-primary/6"
-                        : "border-border hover:border-primary/30 hover:bg-muted/50",
-                    ].join(" ")}
+                    onClick={() => handleWantTap(w)}
+                    className="w-full text-left p-4 rounded-xl border border-border hover:border-primary/30 hover:bg-muted/50 active:bg-primary/5 transition-all duration-200 space-y-1.5"
                   >
-                    {rank !== null && (
-                      <span className="absolute top-3 right-3 w-5 h-5 rounded-full bg-primary text-primary-foreground text-xs font-semibold flex items-center justify-center">
-                        {rank}
-                      </span>
-                    )}
-                    <p className="font-medium text-sm pr-7">{w.label}</p>
+                    <div className="flex items-center justify-between">
+                      <p className="font-medium text-sm">{w.label}</p>
+                      {count > 0 && (
+                        <span className="text-xs text-primary/50 font-medium tabular-nums">×{count}</span>
+                      )}
+                    </div>
                     <p className="text-xs text-muted-foreground leading-relaxed">{w.description}</p>
                   </button>
                 );
               })}
-              {rankedWants.length > 0 && (
-                <Button className="w-full" onClick={handleConfirmWants}>
-                  开始释放{rankedWants.length > 1 ? `（共 ${rankedWants.length} 个）` : ""}
-                </Button>
-              )}
               {!loading && session.generatedWants.length > 0 && (
-                <button
-                  onClick={() => { setWantReidentifyMode(true); setAnimKey((k) => k + 1); }}
-                  className="w-full text-xs text-muted-foreground/50 hover:text-muted-foreground text-center py-1 transition-colors"
-                >
-                  这些都不太准确，换个角度识别
-                </button>
-              )}
-              {!loading && (
-                <button
-                  onClick={handleSkipWants}
-                  className="w-full text-xs text-muted-foreground/40 hover:text-muted-foreground/60 text-center py-1 transition-colors"
-                >
-                  这些都不是，跳过
-                </button>
+                <>
+                  <Button variant="outline" className="w-full" onClick={() => {
+                    setWantTapCounts({});
+                    updateSession({ currentStep: 1, identifiedEmotion: null, generatedWants: [] });
+                  }}>
+                    这轮差不多了，重新输入感受
+                  </Button>
+                  <Button className="w-full" onClick={handleFinishWants}>完成本次释放</Button>
+                  <button
+                    onClick={() => { setWantReidentifyMode(true); setAnimKey((k) => k + 1); }}
+                    className="w-full text-xs text-muted-foreground/50 hover:text-muted-foreground text-center py-1 transition-colors"
+                  >
+                    这些都不太准确，换个角度识别
+                  </button>
+                  <button
+                    onClick={handleSkipWants}
+                    className="w-full text-xs text-muted-foreground/40 hover:text-muted-foreground/60 text-center py-1 transition-colors"
+                  >
+                    这些都不是，跳过
+                  </button>
+                </>
               )}
             </div>
-          )}
-
-          {/* 步骤8：想要的子阶段 */}
-          {step === 8 && wantCheckPhase === null && (
-            <div className="space-y-5">
-              {session.selectedWant && (
-                <p className="text-sm text-muted-foreground leading-relaxed">{session.selectedWant.description}</p>
-              )}
-              {wantPhase === "allow" && (
-                <StepYesNo
-                  question={`你能允许「${wantLabel}」就这样存在吗？`}
-                  subtext="Could you let this wanting be here?"
-                  onAnswer={handleWantPhaseAnswer}
-                />
-              )}
-              {wantPhase === "could" && (
-                <StepYesNo
-                  question={`你能让「${wantLabel}」离开吗？`}
-                  subtext="Could you let it go?"
-                  onAnswer={handleWantPhaseAnswer}
-                />
-              )}
-              {wantPhase === "would" && (
-                <StepYesNo
-                  question={`你愿意放下「${wantLabel}」吗？`}
-                  subtext="Would you let it go? · 放下执着不等于放弃拥有"
-                  onAnswer={handleWantPhaseAnswer}
-                />
-              )}
-              {wantPhase === "when" && <StepWhen onAnswer={handleWantWhen} />}
-            </div>
-          )}
-
-          {/* 步骤8：检查是否还有残留 */}
-          {step === 8 && wantCheckPhase === "same" && (
-            <StepYesNo
-              question={`对「${wantLabel}」的执着，还有残留吗？`}
-              subtext="如果内心仍有一丝抓紧的感觉，选「是」再来一轮；感觉轻了就选「否」。"
-              onAnswer={handleWantCheckSame}
-            />
-          )}
-
-          {/* 步骤8：检查下一个想要 */}
-          {step === 8 && wantCheckPhase === "others" && (
-            nextRankedWant ? (
-              <StepYesNo
-                question={`接下来释放第 ${currentWantRankIndex + 2} 个渴望：「${nextRankedWant.label}」？`}
-                onAnswer={handleWantCheckOthers}
-              />
-            ) : (
-              <StepYesNo
-                question="还有其他深层渴望想继续释放吗？"
-                subtext="选「是」回到列表重新选择，选「否」完成这部分。"
-                onAnswer={handleWantCheckOthers}
-              />
-            )
           )}
 
           {/* 步骤9：可选记录 */}
