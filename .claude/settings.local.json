@@ -16,7 +16,9 @@
       "Bash(python3 -c \":*)",
       "Bash(sips -g hasAlpha /Users/yunying/projects/inner-tools/public/logo.png)",
       "Bash(node -e \":*)",
-      "Bash(python3 -c \"import struct, zlib\")"
+      "Bash(python3 -c \"import struct, zlib\")",
+      "Bash(git -C /Users/yunying/projects/inner-tools ls-files public/)",
+      "Bash(git -C /Users/yunying/projects/inner-tools show HEAD:app/favicon.ico)"
     ]
   }
 }
