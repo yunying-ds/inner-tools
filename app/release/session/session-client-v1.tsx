@@ -123,11 +123,7 @@ export default function SessionPage({ onBack }: { onBack?: () => void }) {
   useEffect(() => {
     if (session.currentStep === 7 && session.generatedWants.length === 0 && !wantsLoadedRef.current) {
       wantsLoadedRef.current = true;
-      if (isManualEmotion) {
-        updateSession({ generatedWants: FALLBACK_WANTS });
-      } else {
-        loadWantOptions();
-      }
+      loadWantOptions();
     }
     if (session.currentStep !== 7) {
       wantsLoadedRef.current = false;
@@ -141,10 +137,10 @@ export default function SessionPage({ onBack }: { onBack?: () => void }) {
   }, [session.currentStep]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- 步骤1 ----
-  async function handleStep1Submit() {
-    if (!textInput.trim() || loading) return;
+  async function handleStep1Submit(inputOverride?: string) {
+    const input = inputOverride ?? textInput.trim();
+    if (!input || loading) return;
     setLoading(true);
-    const input = textInput.trim();
     // Check input type first
     try {
       const typeRes = await fetch("/api/release/identify-input", {
@@ -157,7 +153,7 @@ export default function SessionPage({ onBack }: { onBack?: () => void }) {
         setOriginalInput((prev) => prev || input);
         setLastTextInput(input);
         if (typeData.inputType === "body") {
-          setBodyGuidance(input);
+          setBodyGuidance(typeData.label || input);
           setTextInput("");
           setLoading(false);
           setAnimKey((k) => k + 1);
@@ -341,6 +337,27 @@ export default function SessionPage({ onBack }: { onBack?: () => void }) {
       history: [...session.history, { stepId: 1, question: "手动选择情绪", answer: `${emotion.level}：${emotion.words.join("、")}`, timestamp: Date.now() }],
       currentStep: 2,
     });
+  }
+
+  // ---- 返回 ----
+  function handleBack() {
+    if (step === 1) {
+      if (pendingEmotion || emotionSelection || bodyGuidance || topicMode || selfInputMode || manualEmotionPicker) {
+        setPendingEmotion(null);
+        setEmotionSelection(null);
+        setBodyGuidance(null);
+        setTopicMode(null);
+        setSelfInputMode(false);
+        setManualEmotionPicker(false);
+        setCorrectionMode(null);
+        setTextInput(lastTextInput);
+        setAnimKey((k) => k + 1);
+      } else {
+        onBack ? onBack() : router.back();
+      }
+    } else {
+      updateSession({ currentStep: Math.max(1, step - 1) });
+    }
   }
 
   // ---- 退出 ----
@@ -649,7 +666,7 @@ export default function SessionPage({ onBack }: { onBack?: () => void }) {
       {/* 顶部进度 */}
       <div className="px-4 pt-6 pb-2 max-w-lg mx-auto w-full">
         <div className="flex items-center justify-between text-xs text-muted-foreground mb-2">
-          <button onClick={() => step === 1 ? (onBack ? onBack() : router.back()) : router.back()} className="hover:text-foreground transition-colors">← 返回</button>
+          <button onClick={handleBack} className="hover:text-foreground transition-colors">← 返回</button>
           <span>{Math.min(step, TOTAL_STEPS)} / {TOTAL_STEPS}</span>
           <button
             onClick={handleExit}
@@ -681,6 +698,9 @@ export default function SessionPage({ onBack }: { onBack?: () => void }) {
           {/* 已识别情绪标签 */}
           {session.identifiedEmotion && step > 1 && (
             <div className="space-y-2">
+              {originalInput && originalInput !== emotionLabel && (
+                <p className="text-xs text-muted-foreground/50">来自：{originalInput}</p>
+              )}
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="inline-block text-sm font-semibold px-3 py-1 rounded-full bg-primary/12 text-primary border border-primary/25">
                   {session.identifiedEmotion.level}
@@ -927,13 +947,13 @@ export default function SessionPage({ onBack }: { onBack?: () => void }) {
           {step === 1 && bodyGuidance && (
             <div className="space-y-5">
               <p className="text-sm text-muted-foreground leading-relaxed">
-                身体往往储存了我们还未被意识到的情绪。
+                身体往往储存了我们还未意识到的情绪。
               </p>
               <h2 className="text-lg font-medium leading-snug">
-                「{bodyGuidance}」储存的情绪可能是？
+                如果「{bodyGuidance}」说话，它会说什么？
               </h2>
               <Textarea
-                placeholder="如果让这个身体部位说话，它会说什么？"
+                placeholder="让它说话……不需要想清楚，直接写下来。"
                 value={textInput}
                 onChange={(e) => setTextInput(e.target.value)}
                 rows={3}
@@ -1216,20 +1236,20 @@ export default function SessionPage({ onBack }: { onBack?: () => void }) {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey && textInput.trim()) {
                       e.preventDefault();
+                      const input = textInput.trim();
                       captureEntry(session.identifiedEmotion, session.generatedWants);
-                      setWant7Phase("select");
-                      setReleased7Wants([]);
-                      setWant7LoopCount(0);
+                      setTextInput("");
                       updateSession({ currentStep: 1, identifiedEmotion: null, generatedWants: [] });
+                      handleStep1Submit(input);
                     }
                   }}
                 />
                 <Button className="w-full" disabled={!textInput.trim()} onClick={() => {
+                  const input = textInput.trim();
                   captureEntry(session.identifiedEmotion, session.generatedWants);
-                  setWant7Phase("select");
-                  setReleased7Wants([]);
-                  setWant7LoopCount(0);
+                  setTextInput("");
                   updateSession({ currentStep: 1, identifiedEmotion: null, generatedWants: [] });
+                  handleStep1Submit(input);
                 }}>继续</Button>
                 <Button variant="outline" className="w-full" onClick={handleFinishWants}>没有了，完成本次释放</Button>
               </div>

@@ -14,7 +14,7 @@ export default function Page() {
   const router = useRouter();
   const [mode, setMode] = useState<Mode | null>(null);
 
-  if (mode === "quick") return <QuickSession />;
+  if (mode === "quick") return <QuickSession onBack={() => setMode(null)} />;
   if (mode === "explore") return <ExploreSession onBack={() => setMode(null)} />;
 
   return (

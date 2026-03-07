@@ -88,7 +88,7 @@ function saveToHistory(session: SessionState, status: "completed" | "abandoned")
 
 // ---- Component ----
 
-export default function SessionPage() {
+export default function SessionPage({ onBack }: { onBack?: () => void }) {
   const router = useRouter();
   const [session, setSession] = useState<SessionState>(createInitialSession);
   const [textInput, setTextInput] = useState("");
@@ -98,6 +98,7 @@ export default function SessionPage() {
   const [, setScreenHistory] = useState<Screen[]>([]);
   const [emotionPickerOpen, setEmotionPickerOpen] = useState(false);
   const [releasedWants, setReleasedWants] = useState<WantType[]>([]);
+  const [guidedLetgoNext, setGuidedLetgoNext] = useState<Screen | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const update = useCallback((patch: Partial<SessionState>) => {
@@ -113,7 +114,7 @@ export default function SessionPage() {
   function goBack() {
     setScreenHistory((h) => {
       if (h.length === 0) {
-        router.back();
+        onBack ? onBack() : router.back();
         return h;
       }
       const prev = h[h.length - 1];
@@ -171,11 +172,11 @@ const wantLabel: Record<WantType, string> = {
       const label: string = data.label ?? input.slice(0, 10);
       const aiReply: string = data.aiReply ?? "";
 
-      if (inputType === "topic_event") {
+      if (inputType === "topic_event" || inputType === "body") {
         update({ topic: input, topicLabel: label, inputType, aiMessage: aiReply, screen: "topic_feeling_prompt" });
       } else {
         update({ topic: input, topicLabel: label, inputType, feeling: input, identifiedEmotion: null, aiMessage: aiReply, screen: "s2_allow" });
-        if (inputType === "feeling") identifyFeeling(input);
+        identifyFeeling(input);
       }
     } catch {
       update({ topic: input, topicLabel: input.slice(0, 10), inputType: "feeling", feeling: input, aiMessage: null, screen: "s2_allow" });
@@ -185,11 +186,17 @@ const wantLabel: Record<WantType, string> = {
     }
   }
 
+  const VAGUE_PATTERN = /不知道|不清楚|不确定|没有|没感受|没什么|不太清楚|不明确|不知|说不清/;
+
   function handleFeelingSubmit() {
     if (!textInput.trim()) return;
     const input = textInput.trim();
-    update({ feeling: input, identifiedEmotion: null, screen: "s2_allow", aiMessage: null });
     setTextInput("");
+    if (session.inputType === "body" && VAGUE_PATTERN.test(input)) {
+      update({ feeling: session.topicLabel, identifiedEmotion: null, screen: "s2_allow", aiMessage: `好的，就感受「${session.topicLabel}」那个感觉。` });
+      return;
+    }
+    update({ feeling: input, identifiedEmotion: null, screen: "s2_allow", aiMessage: null });
     identifyFeeling(input);
   }
 
@@ -248,17 +255,18 @@ const wantLabel: Record<WantType, string> = {
   }
 
   function handleGuidedWant(from: "s3_guided_control" | "s3_guided_love" | "s3_guided_safety", has: boolean) {
+    const nextGuided: Record<string, Screen> = {
+      s3_guided_control: "s3_guided_love",
+      s3_guided_love: "s3_guided_safety",
+      s3_guided_safety: "s3_check",
+    };
     if (has) {
       const want: WantType = from === "s3_guided_control" ? "control" : from === "s3_guided_love" ? "recognition_love" : "safety";
       setReleasedWants((prev) => prev.includes(want) ? prev : [...prev, want]);
+      setGuidedLetgoNext(nextGuided[from]);
       update({ selectedWant: want, screen: "s3_letgo", aiMessage: null });
     } else {
-      const next: Record<string, Screen> = {
-        s3_guided_control: "s3_guided_love",
-        s3_guided_love: "s3_guided_safety",
-        s3_guided_safety: "return_to_topic",
-      };
-      update({ screen: next[from] as Screen, aiMessage: null });
+      update({ screen: nextGuided[from], aiMessage: null });
     }
   }
 
@@ -400,7 +408,13 @@ const wantLabel: Record<WantType, string> = {
                 从情绪表选择
               </button>
               <button
-                onClick={() => update({ feeling: session.topic, screen: "body_guidance", aiMessage: "保持在身体的感受，不需要想清楚。" })}
+                onClick={() => {
+                  if (session.inputType === "body") {
+                    update({ feeling: session.topicLabel, identifiedEmotion: null, screen: "s2_allow", aiMessage: `好的，就感受「${session.topicLabel}」那个感觉。` });
+                  } else {
+                    update({ feeling: session.topic, screen: "body_guidance", aiMessage: "保持在身体的感受，不需要想清楚。" });
+                  }
+                }}
                 className="w-full text-xs text-muted-foreground/50 hover:text-muted-foreground text-center py-1 transition-colors"
               >
                 不知道 / 不清楚
@@ -558,8 +572,8 @@ const wantLabel: Record<WantType, string> = {
               <h2 className="text-xl font-medium">可以让这个「{wantLabel[session.selectedWant]}」离开吗？</h2>
               <p className="text-xs text-muted-foreground">无论你的答案是什么，注意到它就是在释放。</p>
               <div className="flex gap-3">
-                <Button className="flex-1" onClick={() => update({ screen: "s3_check", aiMessage: null })}>可以</Button>
-                <Button variant="outline" className="flex-1" onClick={() => update({ screen: "s3_check", aiMessage: null })}>不可以</Button>
+                <Button className="flex-1" onClick={() => { const next = guidedLetgoNext ?? "s3_check"; setGuidedLetgoNext(null); update({ screen: next, aiMessage: null }); }}>可以</Button>
+                <Button variant="outline" className="flex-1" onClick={() => { const next = guidedLetgoNext ?? "s3_check"; setGuidedLetgoNext(null); update({ screen: next, aiMessage: null }); }}>不可以</Button>
               </div>
             </div>
           )}

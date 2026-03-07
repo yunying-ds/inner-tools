@@ -44,16 +44,18 @@ export async function POST(req: NextRequest) {
 User input: "${userInput}"
 
 Identify what type of input this is:
-- topic_event: a situation, goal, relationship, event, memory, or abstract concept they want to release (e.g. "原生家庭", "工作压力", "和朋友的矛盾", "家族业力")
+- topic_event: a situation, goal, relationship, event, memory, abstract concept, OR a bare body part noun with no sensation description (e.g. "原生家庭", "工作压力", "和朋友的矛盾", "家族业力", "下巴", "肩膀", "胃")
 - feeling: an emotion or feeling state (e.g. "焦虑", "愤怒", "难过", "想逃避")
-- body: a physical/body sensation with NO emotional content (e.g. "胸口发紧", "头很沉", "肩膀紧绷")
+- body: a body part WITH a sensation/action/quality described (e.g. "胸口发紧", "头很沉", "肩膀紧绷", "下巴弹响", "胃在痉挛")
 
-Priority rules: if the input contains any emotional feeling, classify as "feeling" — even if it also includes a body sensation or a topic/event description.
+Priority rules:
+- If the input is ONLY a body part noun with no sensation qualifier → topic_event
+- If the input contains any emotional feeling → feeling (even if it also mentions a body part or topic)
 
 For aiReply:
 - topic_event: warm acknowledgment + "对于「{label}」，你现在有什么感受吗？"
 - feeling: warm acknowledgment of the feeling, prepare to enter release
-- body: warm acknowledgment of the body sensation, prepare to enter release`,
+- body: warm acknowledgment + "关于这个「{label}」，你有什么感受吗？" (same pattern as topic_event)`,
         },
       ],
     });
