@@ -34,7 +34,7 @@ export default function Home() {
           <div className="space-y-2 text-sm text-muted-foreground">
             <div className="flex gap-2.5">
               <span className="text-primary/60 shrink-0">1.</span>
-              <span>看见此刻的感受——借助辅助工具识别，或直接感受</span>
+              <span>看见此刻的感受</span>
             </div>
             <div className="flex gap-2.5">
               <span className="text-primary/60 shrink-0">2.</span>

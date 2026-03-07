@@ -11,7 +11,7 @@ const emotionSchema = {
   properties: {
     wordsEn: {
       type: "array",
-      description: "1-2 English keywords selected from the official table",
+      description: "1-3 English keywords selected from the official table",
       items: { type: "string" },
     },
     wordsCn: {
@@ -71,7 +71,7 @@ ${EMOTION_TABLE}
 User's description: "${userInput}"
 
 Instructions:
-1. Select 1-2 English keywords from the chart that best match the user's state
+1. Select English keywords from the chart — one keyword per distinct feeling the user mentioned (up to 3). If the user named 3 distinct feelings, return 3 keywords. Do NOT merge or collapse multiple feelings into one keyword.
 2. Translate them to Chinese based on the USER'S SPECIFIC CONTEXT — not a mechanical dictionary translation. For example, "dread" might become "恐惧" for a medical situation, "忐忑" for a job interview, or "不敢想" for something traumatic.
 3. Identify the primary emotion level
 4. If multiple distinct levels are present (e.g., both Fear and Anger), list all in allEmotions

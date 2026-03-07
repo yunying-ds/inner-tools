@@ -126,6 +126,16 @@
   }
 }
 
+@keyframes want-release {
+  0% { opacity: 0.3; transform: scale(0.97); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+.want-animate {
+  animation: want-release 0.35s ease-out;
+  animation-fill-mode: both;
+}
+
 @keyframes step-fade-in {
   from {
     opacity: 0;

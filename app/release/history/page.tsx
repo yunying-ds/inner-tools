@@ -55,7 +55,7 @@ export default function HistoryPage() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium">
-                      {s.identifiedEmotion?.level ?? "未知情绪"}
+                      {s.identifiedEmotion?.level ?? (s.bodyFeeling ? "身体感受" : "未知情绪")}
                     </span>
                     {s.status === "abandoned" && (
                       <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">中止</span>

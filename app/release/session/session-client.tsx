@@ -1,1162 +1,653 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { v4 as uuidv4 } from "uuid";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { Progress } from "@/components/ui/progress";
-import type { SessionState, WantOption, SavedSession, IdentifiedEmotion } from "@/types/release";
-import { FeedbackForm } from "@/components/release/FeedbackForm";
 import { EmotionPicker } from "@/components/release/EmotionPicker";
-import { EMOTION_LEVELS } from "@/lib/release/emotions";
+import type { SavedSession, IdentifiedEmotion } from "@/types/release";
 
-const TOTAL_STEPS = 9;
-const LOOP_WARNING_THRESHOLD = 3;
-const MAX_LOOPS = 5;
+// ---- Types ----
+
+type InputType = "topic_event" | "feeling" | "body";
+type WantType = "control" | "recognition_love" | "safety";
+
+type Screen =
+  | "input_topic"          // Step 1: initial text input
+  | "topic_feeling_prompt" // Step 1: AI replied, ask for feeling about topic
+  | "body_guidance"        // Step 1: body sensation guidance
+  | "s2_allow"             // Step 2 Q1: 可以允许这个感受存在吗？
+  | "s2_letgo"             // Step 2 Q2: 可以让它离开吗？
+  | "s2_wouldyou"          // Step 2 Q3: 愿意吗？
+  | "s2_when"              // Step 2 Q4: 什么时候？
+  | "s2_eval"              // Step 2 Q5: 现在感受如何？
+  | "s2_nochange"          // Step 2: 没什么变化 sub-options
+  | "s3_select"            // Step 3: 这背后是想要...？
+  | "s3_letgo"             // Step 3: 可以让它离开吗？
+  | "s3_check"             // Step 3: 还有三大想要吗？
+  | "s3_guided_control"    // Step 3 guided: 有想要控制吗？
+  | "s3_guided_love"       // Step 3 guided: 有想要认同/爱吗？
+  | "s3_guided_safety"     // Step 3 guided: 有想要安全吗？
+  | "return_to_topic"      // 对于topic还有什么感受吗？
+  | "return_feedback"      // 释放反应反馈，回到return_to_topic
+  | "complete";
+
+interface SessionState {
+  id: string;
+  startedAt: number;
+  screen: Screen;
+  topic: string;
+  topicLabel: string;
+  inputType: InputType | null;
+  feeling: string;
+  identifiedEmotion: IdentifiedEmotion | null;
+  aiMessage: string | null;
+  step2LoopCount: number;
+  step3LoopCount: number;
+  selectedWant: WantType | null;
+  status: "active" | "completed" | "abandoned";
+}
+
+const MAX_STEP2_LOOPS = 5;
+const MAX_STEP3_LOOPS = 10;
 
 function createInitialSession(): SessionState {
   return {
     id: uuidv4(),
     startedAt: Date.now(),
-    currentStep: 1,
+    screen: "input_topic",
+    topic: "",
+    topicLabel: "",
+    inputType: null,
+    feeling: "",
     identifiedEmotion: null,
-    intensityScore: 5,
-    selectedWant: null,
-    generatedWants: [],
-    loopCount: 0,
-    history: [],
-    status: "active",
     aiMessage: null,
+    step2LoopCount: 0,
+    step3LoopCount: 0,
+    selectedWant: null,
+    status: "active",
   };
 }
 
-function saveSessionToHistory(session: SessionState) {
+function saveToHistory(session: SessionState, status: "completed" | "abandoned") {
+  const label = session.topicLabel || session.topic || "未知";
   const saved: SavedSession = {
     id: session.id,
     startedAt: session.startedAt,
     completedAt: Date.now(),
-    status: session.status,
-    identifiedEmotion: session.identifiedEmotion,
-    summary: session.identifiedEmotion
-      ? `处理了${session.identifiedEmotion.level}情绪（${session.identifiedEmotion.words.join("、")}）`
-      : "完成一次释放",
+    status,
+    identifiedEmotion: session.identifiedEmotion ?? null,
+    summary: status === "completed"
+      ? `释放了关于「${label}」的感受`
+      : `中止了对「${label}」的释放`,
+    ...(session.identifiedEmotion === null && session.feeling ? { bodyFeeling: session.feeling } : {}),
   };
   const existing = JSON.parse(localStorage.getItem("release_history") || "[]");
   localStorage.setItem("release_history", JSON.stringify([saved, ...existing]));
 }
 
-function getProgress(step: number): number {
-  return Math.round((Math.min(step, TOTAL_STEPS) / TOTAL_STEPS) * 100);
-}
-
-const STEP_STAGE: Record<number, string> = {
-  1: "感受觉察", 2: "感受觉察",
-  3: "基础释放", 4: "基础释放", 5: "基础释放",
-  6: "评估", 7: "深层想要", 9: "整合",
-};
+// ---- Component ----
 
 export default function SessionPage() {
   const router = useRouter();
   const [session, setSession] = useState<SessionState>(createInitialSession);
   const [textInput, setTextInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [completed, setCompleted] = useState(false);
-  const [completionMessage, setCompletionMessage] = useState("");
   const [animKey, setAnimKey] = useState(0);
-  const [apiError, setApiError] = useState<string | null>(null);
-  const [emotionSelection, setEmotionSelection] = useState<IdentifiedEmotion[] | null>(null);
-  const [remainingEmotions, setRemainingEmotions] = useState<IdentifiedEmotion[]>([]);
-  const [nextEmotionOffer, setNextEmotionOffer] = useState<IdentifiedEmotion | null>(null);
-  const [exitFlow, setExitFlow] = useState<null | "reason" | "notes">(null);
-  const [exitReason, setExitReason] = useState("");
-  const [exitNotes, setExitNotes] = useState("");
-  const [wantReidentifyMode, setWantReidentifyMode] = useState(false);
-  const [wantReidentifyInput, setWantReidentifyInput] = useState("");
-  const [manualEmotionPicker, setManualEmotionPicker] = useState(false);
-  const [step9Feedback, setStep9Feedback] = useState<{ type: string; feedback: string; hasNewEmotion: boolean } | null>(null);
-  const [pendingEmotion, setPendingEmotion] = useState<IdentifiedEmotion | null>(null);
-  const [correctionMode, setCorrectionMode] = useState<null | "input" | "picker" | "self">(null);
-  const [correctionInput, setCorrectionInput] = useState("");
-  const [lastTextInput, setLastTextInput] = useState("");
-  const [selfInputMode, setSelfInputMode] = useState(false);
-  const [selfInputWord, setSelfInputWord] = useState("");
-  const [selfInputLevel, setSelfInputLevel] = useState<number | null>(null);
-  const [summaryEntries, setSummaryEntries] = useState<{ emotion: IdentifiedEmotion; wants: WantOption[] }[]>([]);
-  const [wantTapCounts, setWantTapCounts] = useState<Record<string, number>>({});
+  const [completed, setCompleted] = useState(false);
+  const [, setScreenHistory] = useState<Screen[]>([]);
+  const [emotionPickerOpen, setEmotionPickerOpen] = useState(false);
+  const [releasedWants, setReleasedWants] = useState<WantType[]>([]);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  function captureEntry(emotion: IdentifiedEmotion | null, wants: WantOption[]) {
-    if (!emotion) return;
-    setSummaryEntries((prev) => [...prev, { emotion, wants }]);
-  }
-
-  const updateSession = useCallback((patch: Partial<SessionState>) => {
-    setSession((prev) => ({ ...prev, ...patch }));
+  const update = useCallback((patch: Partial<SessionState>) => {
+    setSession((prev) => {
+      if (patch.screen && patch.screen !== prev.screen) {
+        setScreenHistory((h) => [...h, prev.screen]);
+      }
+      return { ...prev, ...patch };
+    });
     setAnimKey((k) => k + 1);
   }, []);
 
-  // 步骤7进入时自动加载想要选项
-  const wantsLoadedRef = useRef(false);
-  useEffect(() => {
-    if (session.currentStep === 7 && session.generatedWants.length === 0 && !wantsLoadedRef.current) {
-      wantsLoadedRef.current = true;
-      loadWantOptions();
-    }
-    if (session.currentStep !== 7) {
-      wantsLoadedRef.current = false;
-      setWantReidentifyMode(false);
-      setWantReidentifyInput("");
-    }
-  }, [session.currentStep]); // eslint-disable-line react-hooks/exhaustive-deps
+  function goBack() {
+    setScreenHistory((h) => {
+      if (h.length === 0) {
+        router.back();
+        return h;
+      }
+      const prev = h[h.length - 1];
+      setSession((s) => ({ ...s, screen: prev }));
+      setAnimKey((k) => k + 1);
+      return h.slice(0, -1);
+    });
+  }
 
-  // ---- 步骤1 ----
-  async function handleStep1Submit() {
+  async function identifyFeeling(input: string) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch("/api/release/identify-emotion", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({ userInput: input }),
+      });
+      clearTimeout(timeout);
+      const data: IdentifiedEmotion = await res.json();
+      setSession((prev) => ({ ...prev, identifiedEmotion: data }));
+    } catch {
+      // silently fail — display falls back to raw input
+    }
+  }
+
+  const screen = session.screen;
+  const feeling = session.feeling || "这个感受";
+  const topicLabel = session.topicLabel || session.topic || "这个";
+const wantLabel: Record<WantType, string> = {
+    control: "想要控制",
+    recognition_love: "想要认同/爱",
+    safety: "想要安全/生存",
+  };
+
+  // ---- Step 1 ----
+
+  async function handleTopicSubmit() {
     if (!textInput.trim() || loading) return;
+    const input = textInput.trim();
     setLoading(true);
-    try {
-      const res = await fetch("/api/release/identify-emotion", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userInput: textInput }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      setApiError(null);
-      const historyEntry = { stepId: 1, question: "此刻你有什么感受？", answer: textInput, timestamp: Date.now() };
-      if (data.allEmotions && data.allEmotions.length > 1) {
-        setSession((prev) => ({ ...prev, aiMessage: data.aiReply, history: [...prev.history, historyEntry] }));
-        setEmotionSelection(data.allEmotions);
-        setAnimKey((k) => k + 1);
-      } else {
-        // 先进确认屏，不直接跳 step 2
-        setSession((prev) => ({ ...prev, aiMessage: data.aiReply, history: [...prev.history, historyEntry] }));
-        setPendingEmotion(data);
-        setAnimKey((k) => k + 1);
-      }
-      setLastTextInput(textInput);
-      setTextInput("");
-    } catch (e) {
-      console.error(e);
-      setApiError("AI 服务暂时不可用，请检查 API Key 或稍后重试。");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function handleSelectEmotionToRelease(emotion: IdentifiedEmotion) {
-    const remaining = (emotionSelection || []).filter((e) => e.level !== emotion.level);
-    setRemainingEmotions(remaining);
-    setEmotionSelection(null);
-    updateSession({ identifiedEmotion: emotion, aiMessage: null, currentStep: 2 });
-  }
-
-  function handleConfirmEmotion() {
-    if (!pendingEmotion) return;
-    setPendingEmotion(null);
-    setCorrectionMode(null);
-    updateSession({ identifiedEmotion: pendingEmotion, currentStep: 2 });
-  }
-
-  async function handleCorrectionSubmit() {
-    if (!correctionInput.trim() || loading) return;
-    setLoading(true);
-    try {
-      const res = await fetch("/api/release/identify-emotion", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userInput: correctionInput }),
-      });
-      const data = await res.json();
-      // 在确认屏时更新 pending；在释放中时直接更新 session
-      if (pendingEmotion !== null) {
-        setPendingEmotion({ ...data, words: data.wordsCn ?? data.wordsEn ?? [] });
-      } else {
-        updateSession({ identifiedEmotion: { ...data, words: data.wordsCn ?? data.wordsEn ?? [] } });
-      }
-      setCorrectionMode(null);
-      setCorrectionInput("");
-    } catch {
-      // 静默失败
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function handleCorrectionPick(emotion: IdentifiedEmotion) {
-    if (pendingEmotion !== null) {
-      setPendingEmotion(emotion);
-    } else {
-      updateSession({ identifiedEmotion: emotion });
-    }
-    setCorrectionMode(null);
-  }
-
-  function handleSelfInputConfirm() {
-    if (!selfInputWord.trim() || selfInputLevel === null) return;
-    const level = EMOTION_LEVELS.find((l) => l.index === selfInputLevel)!;
-    const emotion: IdentifiedEmotion = {
-      words: [selfInputWord.trim()],
-      wordsCn: [selfInputWord.trim()],
-      level: level.name as IdentifiedEmotion["level"],
-      levelEn: level.nameEn,
-      levelIndex: level.index as IdentifiedEmotion["levelIndex"],
-      aiReply: `好的，我们来释放「${selfInputWord.trim()}」。`,
-    };
-    setSelfInputMode(false);
-    setSelfInputWord("");
-    setSelfInputLevel(null);
-    updateSession({
-      identifiedEmotion: emotion,
-      aiMessage: emotion.aiReply,
-      history: [...session.history, { stepId: 1, question: "自行输入情绪", answer: `${level.name}：${selfInputWord.trim()}`, timestamp: Date.now() }],
-      currentStep: 2,
-    });
-  }
-
-  function handleManualEmotionSelect(emotion: IdentifiedEmotion) {
-    setManualEmotionPicker(false);
-    updateSession({
-      identifiedEmotion: emotion,
-      aiMessage: emotion.aiReply,
-      history: [...session.history, { stepId: 1, question: "手动选择情绪", answer: `${emotion.level}：${emotion.words.join("、")}`, timestamp: Date.now() }],
-      currentStep: 2,
-    });
-  }
-
-  // ---- 退出流程 ----
-  function handleExitReason(reason: string) {
-    setExitReason(reason);
-    setExitFlow("notes");
-    setAnimKey((k) => k + 1);
-  }
-
-  function handleExitConfirm() {
-    captureEntry(session.identifiedEmotion, session.generatedWants);
-    const saved: SavedSession = {
-      id: session.id,
-      startedAt: session.startedAt,
-      completedAt: Date.now(),
-      status: "abandoned",
-      identifiedEmotion: session.identifiedEmotion,
-      summary: session.identifiedEmotion
-        ? `中止了对「${session.identifiedEmotion.level}」的释放`
-        : "中止了一次释放",
-      exitReason,
-      exitNotes: exitNotes.trim() || undefined,
-    };
-    const existing = JSON.parse(localStorage.getItem("release_history") || "[]");
-    localStorage.setItem("release_history", JSON.stringify([saved, ...existing]));
-    setExitFlow(null);
-    setCompletionMessage(
-      exitReason === "觉得差不多了，不需要走完"
-        ? "好的，已记录这次释放。"
-        : "已记录，随时可以回来继续。"
-    );
-    setCompleted(true);
-  }
-
-  // ---- 步骤2-4 yes/no ----
-  function handleYesNo(answer: "是" | "否") {
-    const step = session.currentStep;
-    const level = session.identifiedEmotion?.level ?? "感受";
-    const questions: Record<number, string> = {
-      2: `你能允许这份「${level}」存在吗？`,
-      3: `你能让这份「${level}」离开吗？`,
-      4: `你愿意让这份「${level}」离开吗？`,
-    };
-    const history = [...session.history, { stepId: step, question: questions[step] ?? "", answer, timestamp: Date.now() }];
-    updateSession({ history, aiMessage: null, currentStep: step + 1 });
-  }
-
-  // ---- 步骤5 ----
-  function handleChoice2(answer: "现在" | "稍后") {
-    const history = [...session.history, { stepId: 5, question: "什么时候？", answer, timestamp: Date.now() }];
-    updateSession({ history, aiMessage: null, currentStep: 6 });
-  }
-
-  // ---- 步骤6 ----
-  function handleStep6Answer(hasMore: boolean) {
-    const answer = hasMore ? "还有" : "没有了";
-    const newHistory = [...session.history, { stepId: 6, question: `这份「${emotionLevel}」还有吗？`, answer, timestamp: Date.now() }];
-    if (hasMore) {
-      const newLoopCount = session.loopCount + 1;
-      if (newLoopCount >= MAX_LOOPS) {
-        updateSession({ loopCount: newLoopCount, history: newHistory, aiMessage: "感受持续存在，说明它可能有更深层的根源，让我们看看背后深层的渴望", currentStep: 7 });
-      } else {
-        updateSession({ loopCount: newLoopCount, history: newHistory, aiMessage: "嗯，还有一些，让我们再来一轮", currentStep: 3 });
-      }
-    } else {
-      updateSession({ history: newHistory, currentStep: 7, aiMessage: null });
-    }
-  }
-
-  // ---- 步骤7 ----
-  async function loadWantOptions(overrideInput?: string) {
-    setLoading(true);
-    try {
-      const res = await fetch("/api/release/generate-wants", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          emotionLevel: session.identifiedEmotion?.level,
-          emotionWords: session.identifiedEmotion?.words ?? [],
-          userInput: overrideInput ?? session.history[0]?.answer ?? "",
-        }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      updateSession({ generatedWants: Array.isArray(data.wants) ? data.wants : [] });
-    } catch (e) {
-      console.error(e);
-      updateSession({
-        generatedWants: [
-          { label: "想要被认同/被爱", description: "你想要被理解、被看见、被认同、被爱吗？" },
-          { label: "想要控制", description: "你想要控制局面、让一切按你的计划进行吗？" },
-          { label: "想要安全/生存", description: "你担心失去某些重要的东西、害怕未来没有保障吗？" },
-        ],
-      });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleWantReidentifySubmit() {
-    if (!wantReidentifyInput.trim() || loading) return;
-    const input = wantReidentifyInput;
-    setWantReidentifyMode(false);
-    setWantReidentifyInput("");
-    updateSession({ generatedWants: [] });
-    await loadWantOptions(input);
-  }
-
-  function handleWantTap(want: WantOption) {
-    const newHistory = [...session.history, {
-      stepId: 7,
-      question: "释放想要：",
-      answer: want.label,
-      timestamp: Date.now(),
-    }];
-    setWantTapCounts((prev) => ({ ...prev, [want.label]: (prev[want.label] ?? 0) + 1 }));
-    updateSession({ selectedWant: want, history: newHistory });
-  }
-
-  function handleFinishWants() {
-    captureEntry(session.identifiedEmotion, session.generatedWants);
-    saveSessionToHistory({ ...session, status: "completed" });
-    if (remainingEmotions.length > 0) {
-      setNextEmotionOffer(remainingEmotions[0]);
-      setRemainingEmotions(remainingEmotions.slice(1));
-    } else {
-      updateSession({ currentStep: 9, aiMessage: null });
-    }
-  }
-
-  function handleSkipWants() {
-    captureEntry(session.identifiedEmotion, []);
-    saveSessionToHistory({ ...session, status: "completed" });
-    if (remainingEmotions.length > 0) {
-      setNextEmotionOffer(remainingEmotions[0]);
-      setRemainingEmotions(remainingEmotions.slice(1));
-    } else {
-      updateSession({ currentStep: 9, aiMessage: null });
-    }
-  }
-
-  // ---- 步骤9（可选记录） ----
-  async function handleStep9Submit() {
-    if (!textInput.trim()) {
-      setCompletionMessage("这次释放完成了。");
-      setCompleted(true);
-      return;
-    }
-    setLoading(true);
-    try {
-      const res = await fetch("/api/release/analyze-step9", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userInput: textInput,
-          currentEmotion: session.identifiedEmotion?.level ?? "情绪",
-        }),
-      });
-      const data = await res.json();
-      setStep9Feedback(data);
-    } catch {
-      setStep9Feedback({ type: "release_signal", feedback: "感谢你的记录，这次释放完成了。", hasNewEmotion: false });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function handleStep9Continue() {
-    // 有新情绪：保留文字，重置进入下一轮
-    const input = textInput;
-    setStep9Feedback(null);
-    setSession({ ...createInitialSession(), aiMessage: "有新的感受浮现，让我们继续。" });
-    setEmotionSelection(null);
-    setRemainingEmotions([]);
-    setNextEmotionOffer(null);
-    setTextInput(input);
-    setAnimKey((k) => k + 1);
-  }
-
-  function handleStep9Complete() {
-    setCompletionMessage("这次释放完成了。");
-    setCompleted(true);
-  }
-
-  function handleStartNextEmotion(emotion: IdentifiedEmotion, remaining: IdentifiedEmotion[]) {
-    setNextEmotionOffer(null);
-    setRemainingEmotions(remaining);
-    setSession({
-      ...createInitialSession(),
-      identifiedEmotion: emotion,
-      aiMessage: `接下来我们来看看「${emotion.level}」。`,
-      currentStep: 2,
-    });
     setTextInput("");
-    setAnimKey((k) => k + 1);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      const res = await fetch("/api/release/identify-input", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({ userInput: input }),
+      });
+      const data = await res.json();
+      const inputType: InputType = data.inputType ?? "feeling";
+      const label: string = data.label ?? input.slice(0, 10);
+      const aiReply: string = data.aiReply ?? "";
+
+      if (inputType === "topic_event") {
+        update({ topic: input, topicLabel: label, inputType, aiMessage: aiReply, screen: "topic_feeling_prompt" });
+      } else {
+        update({ topic: input, topicLabel: label, inputType, feeling: input, identifiedEmotion: null, aiMessage: aiReply, screen: "s2_allow" });
+        if (inputType === "feeling") identifyFeeling(input);
+      }
+    } catch {
+      update({ topic: input, topicLabel: input.slice(0, 10), inputType: "feeling", feeling: input, aiMessage: null, screen: "s2_allow" });
+    } finally {
+      clearTimeout(timeout);
+      setLoading(false);
+    }
   }
 
-  const step = session.currentStep;
-  const emotionLevel = session.identifiedEmotion?.level ?? "感受";
-  const emotionLabel = session.identifiedEmotion?.words.find((w) => w.trim()) || emotionLevel;
-
-  // ---- 下一个情绪提示页 ----
-  if (nextEmotionOffer) {
-    const allOffered = [nextEmotionOffer, ...remainingEmotions];
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background px-4">
-        <div className="max-w-md w-full space-y-6 step-animate">
-          <div className="text-3xl text-muted-foreground text-center">✦</div>
-          <h2 className="text-xl font-medium text-center">这份感受处理得差不多了。</h2>
-          <p className="text-sm text-muted-foreground text-center">
-            你刚才还提到了{allOffered.length > 1 ? "以下感受" : "另一份感受"}，要继续释放哪一个？
-          </p>
-          <div className="space-y-3">
-            {allOffered.map((emotion) => {
-              const others = allOffered.filter((e) => e.level !== emotion.level);
-              return (
-                <button
-                  key={emotion.level}
-                  onClick={() => handleStartNextEmotion(emotion, others)}
-                  className="w-full text-left p-4 rounded-xl border border-border hover:border-primary/40 hover:bg-muted/50 transition-all duration-200"
-                >
-                  <p className="font-semibold text-sm text-primary">
-                    {emotion.level}{emotion.words[0] ? `：${emotion.words[0]}` : ""}
-                  </p>
-                  {emotion.words.length > 1 && (
-                    <p className="text-xs text-muted-foreground mt-0.5">{emotion.words.slice(1).join("、")}</p>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-          <Button variant="outline" className="w-full" onClick={() => {
-            setNextEmotionOffer(null);
-            setRemainingEmotions([]);
-            setCompletionMessage("好的，今天就先到这里。");
-            setCompleted(true);
-          }}>结束本次</Button>
-        </div>
-      </div>
-    );
+  function handleFeelingSubmit() {
+    if (!textInput.trim()) return;
+    const input = textInput.trim();
+    update({ feeling: input, identifiedEmotion: null, screen: "s2_allow", aiMessage: null });
+    setTextInput("");
+    identifyFeeling(input);
   }
 
-  // ---- 完成页 ----
+  function handleEmotionPickerSelect(emotion: IdentifiedEmotion) {
+    setEmotionPickerOpen(false);
+    const label = emotion.wordsCn?.[0] ?? emotion.words[0] ?? emotion.level;
+    update({ feeling: label, identifiedEmotion: emotion, screen: "s2_allow", aiMessage: null });
+  }
+
+  // ---- Step 2 ----
+
+  function advanceS2() {
+    const next: Partial<Record<Screen, Screen>> = {
+      s2_allow: "s2_letgo",
+      s2_letgo: "s2_wouldyou",
+      s2_wouldyou: "s2_when",
+      s2_when: "s2_eval",
+    };
+    const nextScreen = next[screen];
+    if (nextScreen) update({ screen: nextScreen, aiMessage: null });
+  }
+
+  function handleS2Eval(result: "better" | "lighter" | "nochange") {
+    const newCount = session.step2LoopCount + 1;
+    if (result === "better") {
+      update({ screen: "s3_select", aiMessage: null, step2LoopCount: 0 });
+    } else if (result === "lighter") {
+      if (newCount >= MAX_STEP2_LOOPS) {
+        update({ screen: "s3_select", aiMessage: "感受持续存在，让我们看看背后深层的渴望", step2LoopCount: newCount });
+      } else {
+        update({ screen: "s2_letgo", aiMessage: null, step2LoopCount: newCount });
+      }
+    } else {
+      if (newCount >= MAX_STEP2_LOOPS) {
+        update({ screen: "s3_select", aiMessage: "让我们直接看看背后的渴望", step2LoopCount: newCount });
+      } else {
+        update({ screen: "s2_nochange", step2LoopCount: newCount });
+      }
+    }
+  }
+
+  // ---- Step 3 ----
+
+  function handleS3Check(want: WantType | "none") {
+    if (want === "none") {
+      update({ screen: "return_to_topic", aiMessage: null, step3LoopCount: 0 });
+    } else {
+      const newCount = session.step3LoopCount + 1;
+      if (newCount >= MAX_STEP3_LOOPS) {
+        update({ screen: "return_to_topic", aiMessage: null, step3LoopCount: newCount });
+      } else {
+        setReleasedWants((prev) => prev.includes(want) ? prev : [...prev, want]);
+        update({ selectedWant: want, screen: "s3_letgo", aiMessage: null, step3LoopCount: newCount });
+      }
+    }
+  }
+
+  function handleGuidedWant(from: "s3_guided_control" | "s3_guided_love" | "s3_guided_safety", has: boolean) {
+    if (has) {
+      const want: WantType = from === "s3_guided_control" ? "control" : from === "s3_guided_love" ? "recognition_love" : "safety";
+      setReleasedWants((prev) => prev.includes(want) ? prev : [...prev, want]);
+      update({ selectedWant: want, screen: "s3_letgo", aiMessage: null });
+    } else {
+      const next: Record<string, Screen> = {
+        s3_guided_control: "s3_guided_love",
+        s3_guided_love: "s3_guided_safety",
+        s3_guided_safety: "return_to_topic",
+      };
+      update({ screen: next[from] as Screen, aiMessage: null });
+    }
+  }
+
+  // ---- Return / Complete ----
+
+  function handleReturnFeelingSubmit() {
+    if (!textInput.trim()) return;
+    update({ aiMessage: textInput.trim(), screen: "return_feedback" });
+    setTextInput("");
+  }
+
+  function handleComplete() {
+    saveToHistory(session, "completed");
+    setCompleted(true);
+  }
+
+// ---- Completion screen ----
+
   if (completed) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background px-4">
+      <div className="min-h-screen bg-background flex items-center justify-center px-6">
         <div className="max-w-md w-full text-center space-y-6 step-animate">
           <div className="text-3xl text-muted-foreground">✦</div>
-          <h2 className="text-xl font-medium">{completionMessage}</h2>
-
-          {summaryEntries.length > 0 && (
-            <div className="text-left space-y-3 pt-1">
-              <p className="text-xs text-muted-foreground uppercase tracking-widest">这次你释放了</p>
-              {summaryEntries.map((entry, i) => (
-                <div key={i} className="border border-border rounded-xl px-4 py-3 space-y-1.5">
-                  <p className="text-sm font-medium text-foreground">
-                    {entry.emotion.level}
-                    {entry.emotion.words.length > 0 && (
-                      <span className="font-normal text-muted-foreground"> · {entry.emotion.words.join("、")}</span>
+          <h2 className="text-xl font-medium">这次释放完成了</h2>
+          <p className="text-sm text-muted-foreground">你释放了关于「{topicLabel}」的感受</p>
+          {(session.identifiedEmotion || session.feeling) && (
+            <div className="text-left border border-border rounded-xl px-4 py-3 space-y-1.5">
+              <p className="text-sm font-medium text-foreground">
+                {session.identifiedEmotion ? (
+                  <>
+                    {session.identifiedEmotion.level}
+                    {(session.identifiedEmotion.wordsCn ?? session.identifiedEmotion.words).length > 0 && (
+                      <span className="font-normal text-muted-foreground"> · {(session.identifiedEmotion.wordsCn ?? session.identifiedEmotion.words).join("、")}</span>
                     )}
-                  </p>
-                  {entry.wants.length > 0 && (
-                    <p className="text-xs text-muted-foreground">
-                      背后的想要：{entry.wants.map((w) => w.label).join("、")}
-                    </p>
-                  )}
-                </div>
-              ))}
+                    {session.identifiedEmotion.wordsEn && session.identifiedEmotion.wordsEn.length > 0 && (
+                      <span className="font-normal text-muted-foreground/50"> ({session.identifiedEmotion.wordsEn.join(", ")})</span>
+                    )}
+                  </>
+                ) : (
+                  <span className="font-normal text-muted-foreground">{session.feeling}</span>
+                )}
+              </p>
+              {releasedWants.length > 0 && (
+                <p className="text-xs text-muted-foreground">背后的想要：{releasedWants.map((w) => wantLabel[w]).join("、")}</p>
+              )}
             </div>
           )}
-
-          <FeedbackForm />
           <div className="flex flex-col gap-3 pt-2">
-            <Button onClick={() => {
-              setSession(createInitialSession());
-              setCompleted(false);
-              setTextInput("");
-              setEmotionSelection(null);
-              setRemainingEmotions([]);
-              setNextEmotionOffer(null);
-              setExitReason("");
-              setExitNotes("");
-            }}>
-              开始新一轮
+            <Button onClick={() => { setSession(createInitialSession()); setCompleted(false); setTextInput(""); setScreenHistory([]); setReleasedWants([]); }}>
+              开始新的释放
             </Button>
-            <Button variant="outline" onClick={() => router.push("/release/history")}>
-              查看历史记录
-            </Button>
+            <Button variant="outline" onClick={() => router.push("/release/history")}>查看记录</Button>
+            <Button variant="ghost" onClick={() => router.push("/")}>返回首页</Button>
           </div>
         </div>
       </div>
     );
   }
 
+  // ---- Main render ----
+
   return (
-    <div className="min-h-screen flex flex-col bg-background">
-      {/* 顶部进度 */}
-      <div className="px-4 pt-6 pb-2 max-w-lg mx-auto w-full">
-        <div className="flex items-center justify-between text-xs text-muted-foreground mb-2">
-          <span>{exitFlow ? "退出" : (STEP_STAGE[step] ?? "释放")}</span>
-          <div className="flex items-center gap-3">
-            <span>{Math.min(step, TOTAL_STEPS)} / {TOTAL_STEPS}</span>
-            {!exitFlow && (
-              <button
-                onClick={() => { setExitFlow("reason"); setAnimKey((k) => k + 1); }}
-                className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-              >
-                退出
-              </button>
-            )}
-          </div>
-        </div>
-        <Progress value={getProgress(step)} className="h-0.5" />
+    <div className="min-h-screen bg-background flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between px-6 py-4 border-b border-border/40">
+        <button onClick={goBack} className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+          ← 返回
+        </button>
+        <span className="text-xs text-muted-foreground">圣多纳释放法</span>
+        <button
+          onClick={() => { saveToHistory(session, "abandoned"); router.back(); }}
+          className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+        >
+          退出
+        </button>
       </div>
 
-      {/* API 错误提示 */}
-      {apiError && (
-        <div className="px-4 max-w-lg mx-auto w-full">
-          <div className="flex items-center justify-between gap-3 rounded-lg bg-destructive/10 text-destructive text-sm px-4 py-2.5">
-            <span>{apiError}</span>
-            <button onClick={() => setApiError(null)} className="shrink-0 opacity-60 hover:opacity-100">✕</button>
-          </div>
-        </div>
-      )}
-
-      {/* 主内容 */}
+      {/* Content */}
       <div className="flex-1 flex items-start justify-center px-6 pt-10">
-        <div key={animKey} className="step-animate max-w-lg w-full space-y-6">
+        <div className="max-w-lg w-full">
 
-          {/* 退出流程 */}
-          {exitFlow === "reason" && (
-            <div className="space-y-5">
-              <div>
-                <h2 className="text-xl font-medium">退出前，说说原因</h2>
-                <p className="text-sm text-muted-foreground mt-1">只是留个记录，不是评判。</p>
-              </div>
-              <div className="space-y-3">
-                {["感到抗拒，不想继续", "觉得差不多了，不需要走完", "其他原因"].map((reason) => (
-                  <button
-                    key={reason}
-                    onClick={() => handleExitReason(reason)}
-                    className="w-full text-left px-4 py-3 rounded-xl border border-border hover:border-primary/40 hover:bg-muted/50 transition-all duration-200 text-sm"
-                  >
-                    {reason}
-                  </button>
-                ))}
-              </div>
-              <Button variant="ghost" className="w-full" onClick={() => { setExitFlow(null); setAnimKey((k) => k + 1); }}>
-                取消，继续释放
-              </Button>
-            </div>
-          )}
-
-          {exitFlow === "notes" && (
-            <div className="space-y-5">
-              <div>
-                <h2 className="text-xl font-medium">对这次有什么想说的？</h2>
-                <p className="text-sm text-muted-foreground mt-1">感受的变化、想法、对自己的认识……（可跳过）</p>
-              </div>
-              {exitReason && (
-                <p className="text-xs text-muted-foreground px-1">原因：{exitReason}</p>
-              )}
-              <Textarea
-                placeholder="写下此刻的感受……"
-                value={exitNotes}
-                onChange={(e) => setExitNotes(e.target.value)}
-                rows={4}
-                className="resize-none"
-              />
-              <Button className="w-full" onClick={handleExitConfirm}>保存并退出</Button>
-            </div>
-          )}
-
-          {/* 正常步骤内容（退出流程时隐藏） */}
-          {!exitFlow && <>
-
-          {/* 已识别情绪标签 */}
-          {session.identifiedEmotion && step > 1 && (
-            <div className="space-y-2">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="inline-block text-sm font-semibold px-3 py-1 rounded-full bg-primary/12 text-primary border border-primary/25">
-                  {session.identifiedEmotion.level}
-                  {session.identifiedEmotion.words[0] && `：${session.identifiedEmotion.words[0]}`}
-                  {session.identifiedEmotion.wordsEn?.[0] && (
-                    <span className="font-normal opacity-55 ml-1">({session.identifiedEmotion.wordsEn[0]})</span>
-                  )}
+          {/* Context strip — stable across transitions */}
+          {screen !== "input_topic" && session.topicLabel && (
+            <div className="mb-6 flex items-center gap-2 flex-wrap">
+              <span className="text-xs px-2.5 py-1 rounded-full bg-muted border border-border/40 text-muted-foreground">
+                {session.topicLabel}
+              </span>
+              {session.identifiedEmotion?.wordsCn?.[0] && (
+                <span className="text-xs text-muted-foreground/60">
+                  {session.identifiedEmotion.wordsCn[0]}{session.identifiedEmotion.wordsEn?.[0] ? ` · ${session.identifiedEmotion.wordsEn[0]}` : ""}
                 </span>
-                {!correctionMode && (
-                  <button
-                    onClick={() => setCorrectionMode("input")}
-                    className="text-xs text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-                  >
-                    不准确？
-                  </button>
-                )}
-              </div>
-              {session.identifiedEmotion.words.length > 1 && !correctionMode && (
-                <div className="flex gap-2 flex-wrap">
-                  {session.identifiedEmotion.words.slice(1).map((w, i) => (
-                    <span key={w} className="text-xs px-2.5 py-0.5 rounded-full bg-muted text-foreground/70">
-                      {w}
-                      {session.identifiedEmotion!.wordsEn?.[i + 1] && (
-                        <span className="opacity-55 ml-1">({session.identifiedEmotion!.wordsEn![i + 1]})</span>
-                      )}
-                    </span>
-                  ))}
-                </div>
-              )}
-
-              {/* 纠正：重新描述 */}
-              {correctionMode === "input" && (
-                <div className="space-y-2 pt-1">
-                  <textarea
-                    className="w-full text-sm rounded-lg border border-border bg-background px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-primary/40"
-                    placeholder="重新描述你的感受，AI 会重新识别……"
-                    rows={2}
-                    value={correctionInput}
-                    onChange={(e) => setCorrectionInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleCorrectionSubmit(); } }}
-                  />
-                  <div className="flex gap-2">
-                    <Button size="sm" onClick={handleCorrectionSubmit} disabled={!correctionInput.trim() || loading}>
-                      {loading ? "识别中…" : "重新识别"}
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setCorrectionMode("picker")}>
-                      自己选
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => { setCorrectionMode(null); setCorrectionInput(""); }}>
-                      取消
-                    </Button>
-                  </div>
-                </div>
-              )}
-
-              {/* 纠正：手动选择 */}
-              {correctionMode === "picker" && (
-                <div className="pt-1">
-                  <EmotionPicker
-                    onSelect={handleCorrectionPick}
-                    onCancel={() => setCorrectionMode(null)}
-                  />
-                </div>
               )}
             </div>
           )}
 
-          {/* AI 过渡提示 */}
-          {session.aiMessage && (
-            <p className="text-base text-foreground/80 leading-relaxed">{session.aiMessage}</p>
+          <div key={animKey} className="step-animate w-full space-y-6">
+
+          {session.aiMessage && screen !== "return_feedback" && (
+            <p className="text-sm text-muted-foreground leading-relaxed">{session.aiMessage}</p>
           )}
 
-          {/* 步骤1：AI识别后确认屏 */}
-          {step === 1 && pendingEmotion && !correctionMode && (
+          {/* input_topic */}
+          {screen === "input_topic" && (
             <div className="space-y-5">
-              <div>
-                <button
-                  onClick={() => { setPendingEmotion(null); setTextInput(lastTextInput); setCorrectionMode(null); setAnimKey((k) => k + 1); }}
-                  className="text-sm text-muted-foreground/50 hover:text-muted-foreground mb-3 flex items-center gap-1 transition-colors"
-                >
-                  ← 继续编辑
-                </button>
-                <p className="text-sm text-muted-foreground mb-3">{session.aiMessage}</p>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="inline-block text-sm font-semibold px-3 py-1 rounded-full bg-primary/12 text-primary border border-primary/25">
-                    {pendingEmotion.level}
-                    {pendingEmotion.words[0] && `：${pendingEmotion.words[0]}`}
-                    {pendingEmotion.wordsEn?.[0] && (
-                      <span className="font-normal opacity-55 ml-1">({pendingEmotion.wordsEn[0]})</span>
-                    )}
-                  </span>
-                  {pendingEmotion.words.slice(1).map((w, i) => (
-                    <span key={w} className="text-xs px-2.5 py-0.5 rounded-full bg-muted text-foreground/70">
-                      {w}
-                      {pendingEmotion.wordsEn?.[i + 1] && (
-                        <span className="opacity-55 ml-1">({pendingEmotion.wordsEn[i + 1]})</span>
-                      )}
-                    </span>
-                  ))}
-                </div>
-              </div>
-              <Button className="w-full" onClick={handleConfirmEmotion}>
-                就是这个，开始释放
-              </Button>
-              <div className="flex justify-center gap-4">
-                <button onClick={() => setCorrectionMode("input")} className="text-sm text-muted-foreground/60 hover:text-muted-foreground transition-colors">重新描述</button>
-                <span className="text-muted-foreground/30 text-sm">·</span>
-                <button onClick={() => setCorrectionMode("picker")} className="text-sm text-muted-foreground/60 hover:text-muted-foreground transition-colors">从情绪表选</button>
-                <span className="text-muted-foreground/30 text-sm">·</span>
-                <button onClick={() => setCorrectionMode("self")} className="text-sm text-muted-foreground/60 hover:text-muted-foreground transition-colors">直接输入</button>
-              </div>
-            </div>
-          )}
-
-          {/* 步骤1：确认屏的纠正模式 */}
-          {step === 1 && pendingEmotion && correctionMode === "input" && (
-            <div className="space-y-3">
-              <button onClick={() => setCorrectionMode(null)} className="text-sm text-muted-foreground hover:text-foreground flex items-center gap-1">← 返回</button>
+              <h2 className="text-xl font-medium">今天想关于什么释放？</h2>
+              <p className="text-sm text-muted-foreground">可以是一个目标、一件事、一种感受，甚至是身体的感觉。</p>
               <textarea
-                className="w-full text-sm rounded-lg border border-border bg-background px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-primary/40"
-                placeholder="重新描述你的感受……"
-                rows={2}
-                value={correctionInput}
-                onChange={(e) => setCorrectionInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleCorrectionSubmit(); } }}
-              />
-              <Button size="sm" onClick={handleCorrectionSubmit} disabled={!correctionInput.trim() || loading}>
-                {loading ? "识别中…" : "重新识别"}
-              </Button>
-            </div>
-          )}
-          {step === 1 && pendingEmotion && correctionMode === "picker" && (
-            <EmotionPicker onSelect={handleCorrectionPick} onCancel={() => setCorrectionMode(null)} />
-          )}
-          {step === 1 && pendingEmotion && correctionMode === "self" && (
-            <div className="space-y-4">
-              <button onClick={() => setCorrectionMode(null)} className="text-sm text-muted-foreground hover:text-foreground flex items-center gap-1">← 返回</button>
-              <input
-                type="text"
-                className="w-full text-sm rounded-lg border border-border bg-background px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/40"
-                placeholder="用你自己的词……"
-                value={selfInputWord}
-                onChange={(e) => setSelfInputWord(e.target.value)}
-              />
-              <div className="flex flex-wrap gap-2">
-                {EMOTION_LEVELS.map((l) => (
-                  <button key={l.index} onClick={() => setSelfInputLevel(l.index)}
-                    className={`text-xs px-3 py-1.5 rounded-full border transition-all duration-150 ${selfInputLevel === l.index ? "bg-primary text-primary-foreground border-primary" : "border-border hover:border-primary/40"}`}>
-                    {l.name}
-                  </button>
-                ))}
-              </div>
-              <Button size="sm" onClick={() => {
-                if (!selfInputWord.trim() || selfInputLevel === null) return;
-                const level = EMOTION_LEVELS.find((l) => l.index === selfInputLevel)!;
-                handleCorrectionPick({ words: [selfInputWord.trim()], wordsCn: [selfInputWord.trim()], level: level.name as IdentifiedEmotion["level"], levelEn: level.nameEn, levelIndex: level.index as IdentifiedEmotion["levelIndex"], aiReply: "" });
-                setSelfInputWord(""); setSelfInputLevel(null);
-              }} disabled={!selfInputWord.trim() || selfInputLevel === null}>确认</Button>
-            </div>
-          )}
-
-          {/* 步骤1：手动选择情绪 */}
-          {step === 1 && manualEmotionPicker && (
-            <EmotionPicker
-              onSelect={handleManualEmotionSelect}
-              onCancel={() => setManualEmotionPicker(false)}
-            />
-          )}
-
-          {/* 步骤1：自行输入情绪（老手模式） */}
-          {step === 1 && selfInputMode && (
-            <div className="space-y-4">
-              <div>
-                <button
-                  onClick={() => { setSelfInputMode(false); setSelfInputWord(""); setSelfInputLevel(null); }}
-                  className="text-sm text-muted-foreground hover:text-foreground mb-3 flex items-center gap-1"
-                >
-                  ← 返回
-                </button>
-                <h2 className="text-xl font-medium leading-snug">你感受到的是什么？</h2>
-              </div>
-              <input
-                type="text"
-                className="w-full text-sm rounded-lg border border-border bg-background px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/40"
-                placeholder="用你自己的词描述，比如：委屈、对自己失望……"
-                value={selfInputWord}
-                onChange={(e) => setSelfInputWord(e.target.value)}
-              />
-              <div>
-                <p className="text-sm text-muted-foreground mb-2">它属于哪个层级？</p>
-                <div className="flex flex-wrap gap-2">
-                  {EMOTION_LEVELS.map((l) => (
-                    <button
-                      key={l.index}
-                      onClick={() => setSelfInputLevel(l.index)}
-                      className={`text-xs px-3 py-1.5 rounded-full border transition-all duration-150 ${
-                        selfInputLevel === l.index
-                          ? "bg-primary text-primary-foreground border-primary"
-                          : "border-border hover:border-primary/40 hover:bg-muted/50"
-                      }`}
-                    >
-                      {l.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <Button
-                className="w-full"
-                onClick={handleSelfInputConfirm}
-                disabled={!selfInputWord.trim() || selfInputLevel === null}
-              >
-                开始释放
-              </Button>
-            </div>
-          )}
-
-          {/* 步骤1：输入 */}
-          {step === 1 && !emotionSelection && !manualEmotionPicker && !selfInputMode && !pendingEmotion && (
-            <div className="space-y-3">
-              <StepOpenText
-                question="此刻你有什么感受？"
-                placeholder="可以描述最近发生的一件事、一直在脑海里转的念头，身体某个部位的感觉，或是对某个目标的感受……"
-                value={textInput}
-                onChange={setTextInput}
-                onSubmit={handleStep1Submit}
-                loading={loading}
-              />
-              <div className="flex justify-center gap-4">
-                <button
-                  onClick={() => setManualEmotionPicker(true)}
-                  className="text-sm text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-                >
-                  从情绪表选
-                </button>
-                <span className="text-muted-foreground/30 text-sm">·</span>
-                <button
-                  onClick={() => setSelfInputMode(true)}
-                  className="text-sm text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-                >
-                  直接输入
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* 步骤1：检测到多种情绪，让用户选择 */}
-          {step === 1 && emotionSelection && (
-            <div className="space-y-4">
-              <div>
-                <h2 className="text-xl font-medium leading-snug">你想先释放哪个？</h2>
-                <p className="text-sm text-muted-foreground mt-1">点击你此刻最想处理的那份感受</p>
-              </div>
-              <div className="space-y-3">
-                {emotionSelection.map((emotion) => (
-                  <button
-                    key={emotion.level}
-                    onClick={() => handleSelectEmotionToRelease(emotion)}
-                    className="w-full text-left p-4 rounded-xl border border-border hover:border-primary/40 hover:bg-muted/50 transition-all duration-200 space-y-1"
-                  >
-                    <p className="font-semibold text-sm text-primary">
-                      {emotion.level}{emotion.words[0] ? `：${emotion.words[0]}` : ""}
-                    </p>
-                    {emotion.words.length > 1 && (
-                      <p className="text-xs text-muted-foreground">{emotion.words.slice(1).join("、")}</p>
-                    )}
-                  </button>
-                ))}
-              </div>
-              <div className="flex justify-center gap-4 pt-1">
-                <button
-                  onClick={() => { setEmotionSelection(null); setTextInput(lastTextInput); }}
-                  className="text-sm text-muted-foreground/60 hover:text-muted-foreground transition-colors"
-                >
-                  重新描述
-                </button>
-                <span className="text-muted-foreground/30 text-sm">·</span>
-                <button
-                  onClick={() => { setEmotionSelection(null); setManualEmotionPicker(true); }}
-                  className="text-sm text-muted-foreground/60 hover:text-muted-foreground transition-colors"
-                >
-                  从情绪表选
-                </button>
-                <span className="text-muted-foreground/30 text-sm">·</span>
-                <button
-                  onClick={() => { setEmotionSelection(null); setSelfInputMode(true); }}
-                  className="text-sm text-muted-foreground/60 hover:text-muted-foreground transition-colors"
-                >
-                  直接输入
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* 步骤2 */}
-          {step === 2 && (
-            <div className="space-y-4">
-              <button
-                onClick={() => { setPendingEmotion(session.identifiedEmotion); setTextInput(lastTextInput); updateSession({ currentStep: 1, identifiedEmotion: null }); }}
-                className="text-sm text-muted-foreground/50 hover:text-muted-foreground flex items-center gap-1 transition-colors"
-              >
-                ← 返回
-              </button>
-              <StepYesNo
-                question={`你能允许这份「${emotionLabel}」就这样存在吗？`}
-                subtext="Could you let this feeling be here? · 先感受一下它在身体的哪里"
-                onAnswer={handleYesNo}
-              />
-              <button
-                onClick={() => updateSession({ currentStep: 7 })}
-                className="w-full text-xs text-muted-foreground/40 hover:text-muted-foreground/60 text-center py-1 transition-colors"
-              >
-                跳过，直接识别「三大想要」
-              </button>
-            </div>
-          )}
-
-          {/* 步骤3 */}
-          {step === 3 && (
-            <div className="space-y-4">
-              <StepYesNo
-                question={`你能让这份「${emotionLabel}」离开吗？`}
-                subtext="Could you let it go?"
-                onAnswer={handleYesNo}
-              />
-              <button
-                onClick={() => updateSession({ currentStep: 7 })}
-                className="w-full text-xs text-muted-foreground/40 hover:text-muted-foreground/60 text-center py-1 transition-colors"
-              >
-                跳过，直接识别「三大想要」
-              </button>
-            </div>
-          )}
-
-          {/* 步骤4 */}
-          {step === 4 && (
-            <div className="space-y-4">
-              <StepYesNo
-                question={`你愿意让这份「${emotionLabel}」离开吗？`}
-                subtext="Would you let it go?"
-                onAnswer={handleYesNo}
-              />
-              <button
-                onClick={() => updateSession({ currentStep: 7 })}
-                className="w-full text-xs text-muted-foreground/40 hover:text-muted-foreground/60 text-center py-1 transition-colors"
-              >
-                跳过，直接识别「三大想要」
-              </button>
-            </div>
-          )}
-
-          {/* 步骤5 */}
-          {step === 5 && (
-            <div className="space-y-4">
-              <StepWhen
-                note={`即使外部情况没变，内心的「${emotionLabel}」可以现在就松开。`}
-                onAnswer={handleChoice2}
-              />
-              <button
-                onClick={() => updateSession({ currentStep: 7 })}
-                className="w-full text-xs text-muted-foreground/40 hover:text-muted-foreground/60 text-center py-1 transition-colors"
-              >
-                跳过，直接识别「三大想要」
-              </button>
-            </div>
-          )}
-
-          {/* 步骤6 */}
-          {step === 6 && (
-            <div className="space-y-5">
-              <h2 className="text-xl font-medium">这份「{emotionLabel}」还有吗？</h2>
-              {session.loopCount >= LOOP_WARNING_THRESHOLD && (
-                <p className="text-xs text-muted-foreground">这个议题可能比较深层，你也可以先停下来，让自己休息一下。</p>
-              )}
-              <div className="flex gap-3">
-                <Button className="flex-1" onClick={() => handleStep6Answer(true)}>还有，继续释放</Button>
-                <Button variant="outline" className="flex-1" onClick={() => handleStep6Answer(false)}>没有了，下一步</Button>
-              </div>
-            </div>
-          )}
-
-          {/* 步骤7：重新识别想要 */}
-          {step === 7 && wantReidentifyMode && (
-            <StepOpenText
-              question="在这件事里，你最希望得到什么？"
-              subtext="换个角度来看——如果这件事能按你心意发展，那会是什么样？"
-              placeholder="用自己的话说就好，比如「希望他能理解我」……"
-              value={wantReidentifyInput}
-              onChange={setWantReidentifyInput}
-              onSubmit={handleWantReidentifySubmit}
-              loading={loading}
-            />
-          )}
-
-          {/* 步骤7：想要释放循环 */}
-          {step === 7 && !wantReidentifyMode && (
-            <div className="space-y-5 pb-16">
-              <div className="space-y-2">
-                <h2 className="text-xl font-medium">在这份「{emotionLabel}」背后，你最想要的是……</h2>
-                <p className="text-sm text-muted-foreground leading-relaxed">
-                  点击你此刻感受到的渴望，每次点击即是一次释放。可以反复点击，直到感觉轻了再完成。
-                </p>
-              </div>
-              {loading && <p className="text-sm text-muted-foreground">正在感应……</p>}
-              {session.generatedWants.map((w) => {
-                const count = wantTapCounts[w.label] ?? 0;
-                return (
-                  <button
-                    key={w.label}
-                    onClick={() => handleWantTap(w)}
-                    className="w-full text-left p-4 rounded-xl border border-border hover:border-primary/30 hover:bg-muted/50 active:bg-primary/5 transition-all duration-200 space-y-1.5"
-                  >
-                    <div className="flex items-center justify-between">
-                      <p className="font-medium text-sm">{w.label}</p>
-                      {count > 0 && (
-                        <span className="text-xs text-primary/50 font-medium tabular-nums">×{count}</span>
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground leading-relaxed">{w.description}</p>
-                  </button>
-                );
-              })}
-              {!loading && session.generatedWants.length > 0 && (
-                <>
-                  <Button variant="outline" className="w-full" onClick={() => {
-                    setWantTapCounts({});
-                    updateSession({ currentStep: 1, identifiedEmotion: null, generatedWants: [] });
-                  }}>
-                    这轮差不多了，重新输入感受
-                  </Button>
-                  <Button className="w-full" onClick={handleFinishWants}>完成本次释放</Button>
-                  <button
-                    onClick={() => { setWantReidentifyMode(true); setAnimKey((k) => k + 1); }}
-                    className="w-full text-xs text-muted-foreground/50 hover:text-muted-foreground text-center py-1 transition-colors"
-                  >
-                    这些都不太准确，换个角度识别
-                  </button>
-                  <button
-                    onClick={handleSkipWants}
-                    className="w-full text-xs text-muted-foreground/40 hover:text-muted-foreground/60 text-center py-1 transition-colors"
-                  >
-                    这些都不是，跳过
-                  </button>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* 步骤9：可选记录 */}
-          {step === 9 && !step9Feedback && (
-            <div className="space-y-4">
-              <h2 className="text-xl font-medium leading-snug">此刻有什么感受？</h2>
-              <p className="text-sm text-muted-foreground">可以描述身体的反应、浮现的念头，或是什么都没有。不写也可以直接完成。</p>
-              <Textarea
-                placeholder="比如：打了个哈欠、身体轻了一点、脑子里还有一件事……"
+                ref={inputRef}
                 value={textInput}
                 onChange={(e) => setTextInput(e.target.value)}
-                rows={4}
-                className="resize-none"
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleTopicSubmit(); } }}
+                placeholder="写下来……"
+                className="w-full min-h-[100px] resize-none rounded-xl border border-border bg-background px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30"
+                disabled={loading}
               />
-              <Button className="w-full" onClick={handleStep9Submit} disabled={loading}>
-                {loading ? "感应中……" : textInput.trim() ? "提交" : "完成"}
+              <Button className="w-full" onClick={handleTopicSubmit} disabled={!textInput.trim() || loading}>
+                {loading ? "感应中……" : "继续"}
               </Button>
             </div>
           )}
 
-          {/* 步骤9：AI 反馈 */}
-          {step === 9 && step9Feedback && (
+          {/* topic_feeling_prompt */}
+          {screen === "topic_feeling_prompt" && !emotionPickerOpen && (
             <div className="space-y-5">
-              <p className="text-base text-foreground/90 leading-relaxed">{step9Feedback.feedback}</p>
-              {step9Feedback.hasNewEmotion ? (
-                <div className="space-y-2">
-                  <Button className="w-full" onClick={handleStep9Continue}>
-                    继续释放新的感受
-                  </Button>
-                  <Button variant="ghost" className="w-full" onClick={handleStep9Complete}>
-                    先到这里，完成
-                  </Button>
-                </div>
-              ) : (
-                <Button className="w-full" onClick={handleStep9Complete}>
-                  完成
-                </Button>
-              )}
+              <h2 className="text-xl font-medium">对于「{topicLabel}」，你有什么感受吗？</h2>
+              <p className="text-xs text-muted-foreground">不清楚也可以先写"不清楚"，保持在身体感受就好。</p>
+              <textarea
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleFeelingSubmit(); } }}
+                placeholder="写下你的感受……"
+                className="w-full min-h-[80px] resize-none rounded-xl border border-border bg-background px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30"
+              />
+              <Button className="w-full" onClick={handleFeelingSubmit} disabled={!textInput.trim()}>继续</Button>
+              <button
+                onClick={() => setEmotionPickerOpen(true)}
+                className="w-full text-xs text-muted-foreground/50 hover:text-muted-foreground text-center py-1 transition-colors"
+              >
+                从情绪表选择
+              </button>
+              <button
+                onClick={() => update({ feeling: session.topic, screen: "body_guidance", aiMessage: "保持在身体的感受，不需要想清楚。" })}
+                className="w-full text-xs text-muted-foreground/50 hover:text-muted-foreground text-center py-1 transition-colors"
+              >
+                不知道 / 不清楚
+              </button>
             </div>
           )}
-          </>}
+
+          {screen === "topic_feeling_prompt" && emotionPickerOpen && (
+            <EmotionPicker
+              onSelect={handleEmotionPickerSelect}
+              onCancel={() => setEmotionPickerOpen(false)}
+            />
+          )}
+
+          {/* body_guidance */}
+          {screen === "body_guidance" && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-medium">这个感受在身体哪里？感觉像什么？</h2>
+              <p className="text-sm text-muted-foreground leading-relaxed italic">
+                "It might be a strong feeling or a subtle feeling, or a mixture of feelings. Try to identify what it is, but keep mental discussion and rumination to a minimum."
+              </p>
+              <p className="text-sm text-muted-foreground">保持在身体的感受里，不要分析它，直接欢迎它的存在。</p>
+              <textarea
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    const val = textInput.trim();
+                    update({ ...(val ? { feeling: val, identifiedEmotion: null } : {}), screen: "s2_allow", aiMessage: null });
+                    setTextInput("");
+                  }
+                }}
+                placeholder="描述一下这个感受……（可选）"
+                className="w-full min-h-[80px] resize-none rounded-xl border border-border bg-background px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30"
+              />
+              <Button className="w-full" onClick={() => {
+                const val = textInput.trim();
+                update({ ...(val ? { feeling: val, identifiedEmotion: null } : {}), screen: "s2_allow", aiMessage: null });
+                setTextInput("");
+              }}>好，我感受到了</Button>
+            </div>
+          )}
+
+          {/* s2_allow */}
+          {screen === "s2_allow" && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-medium">你可以允许这个「{feeling}」存在吗？</h2>
+              {session.identifiedEmotion?.wordsEn?.[0] && (
+                <p className="text-xs text-muted-foreground italic">
+                  {session.identifiedEmotion.wordsCn?.[0] && `${session.identifiedEmotion.wordsCn[0]} · `}{session.identifiedEmotion.wordsEn[0]}
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground">无论你的答案是什么，都可以进入下一步。</p>
+              <div className="flex gap-3">
+                <Button className="flex-1" onClick={advanceS2}>可以</Button>
+                <Button variant="outline" className="flex-1" onClick={advanceS2}>不可以</Button>
+              </div>
+            </div>
+          )}
+
+          {/* s2_letgo */}
+          {screen === "s2_letgo" && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-medium">可以让它离开吗？</h2>
+              <p className="text-xs text-muted-foreground italic">Could you let it go?</p>
+              <p className="text-xs text-muted-foreground">无论你的答案是什么，都可以进入下一步。</p>
+              <div className="flex gap-3">
+                <Button className="flex-1" onClick={advanceS2}>可以</Button>
+                <Button variant="outline" className="flex-1" onClick={advanceS2}>不可以</Button>
+              </div>
+            </div>
+          )}
+
+          {/* s2_wouldyou */}
+          {screen === "s2_wouldyou" && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-medium">愿意吗？</h2>
+              <p className="text-xs text-muted-foreground italic">Would you?</p>
+              <div className="flex gap-3">
+                <Button className="flex-1" onClick={advanceS2}>愿意</Button>
+                <Button variant="outline" className="flex-1" onClick={advanceS2}>不愿意</Button>
+              </div>
+            </div>
+          )}
+
+          {/* s2_when */}
+          {screen === "s2_when" && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-medium">什么时候？</h2>
+              <p className="text-xs text-muted-foreground italic">When?</p>
+              <div className="flex gap-3">
+                <Button className="flex-1" onClick={advanceS2}>现在</Button>
+                <Button variant="outline" className="flex-1" onClick={advanceS2}>稍后</Button>
+              </div>
+            </div>
+          )}
+
+          {/* s2_eval */}
+          {screen === "s2_eval" && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-medium">现在感受如何？</h2>
+              <div className="space-y-3">
+                <div className="flex gap-3">
+                  <Button className="flex-1" onClick={() => handleS2Eval("lighter")}>还有一些，但轻了</Button>
+                  <Button variant="outline" className="flex-1" onClick={() => handleS2Eval("better")}>好多了 / 轻盈了</Button>
+                </div>
+                <button className="w-full text-xs text-muted-foreground/50 py-2 hover:text-muted-foreground transition-colors" onClick={() => handleS2Eval("nochange")}>没什么变化</button>
+              </div>
+            </div>
+          )}
+
+          {/* s2_nochange */}
+          {screen === "s2_nochange" && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-medium">没关系，我们换个方式继续。</h2>
+              <div className="space-y-3">
+                <Button className="w-full" onClick={() => update({ screen: "return_to_topic", aiMessage: "换个角度感受一下，对于这个，你还有什么其他感受吗？" })}>
+                  换个角度感受
+                </Button>
+                <Button variant="outline" className="w-full" onClick={() => update({ screen: "s3_select", aiMessage: null })}>
+                  直接释放背后的想要
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* s3_select */}
+          {screen === "s3_select" && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-medium">在「{feeling}」背后，你最想要的是……</h2>
+              <div className="space-y-3">
+                {(["control", "recognition_love", "safety"] as WantType[]).map((w) => (
+                  <button
+                    key={w}
+                    onClick={() => { setReleasedWants((prev) => prev.includes(w) ? prev : [...prev, w]); update({ selectedWant: w, screen: "s3_letgo", aiMessage: null }); }}
+                    className="w-full text-left p-4 rounded-xl border border-border hover:border-primary/30 hover:bg-muted/50 active:bg-primary/5 transition-all duration-200"
+                  >
+                    <p className="font-medium text-sm">{wantLabel[w]}</p>
+                  </button>
+                ))}
+                <button
+                  onClick={() => update({ screen: "s3_guided_control", aiMessage: null })}
+                  className="w-full text-xs text-muted-foreground/50 hover:text-muted-foreground text-center py-2 transition-colors"
+                >
+                  不知道
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* s3_letgo */}
+          {screen === "s3_letgo" && session.selectedWant && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-medium">可以让这个「{wantLabel[session.selectedWant]}」离开吗？</h2>
+              <p className="text-xs text-muted-foreground">无论你的答案是什么，注意到它就是在释放。</p>
+              <div className="flex gap-3">
+                <Button className="flex-1" onClick={() => update({ screen: "s3_check", aiMessage: null })}>可以</Button>
+                <Button variant="outline" className="flex-1" onClick={() => update({ screen: "s3_check", aiMessage: null })}>不可以</Button>
+              </div>
+            </div>
+          )}
+
+          {/* s3_check */}
+          {screen === "s3_check" && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-medium">「{feeling}」背后还有……</h2>
+              <div className="space-y-3">
+                {(["control", "recognition_love", "safety"] as WantType[]).map((w) => (
+                  <button
+                    key={w}
+                    onClick={() => handleS3Check(w)}
+                    className="w-full text-left p-4 rounded-xl border border-border hover:border-primary/30 hover:bg-muted/50 active:bg-primary/5 transition-all duration-200"
+                  >
+                    <p className="font-medium text-sm">{wantLabel[w]}</p>
+                  </button>
+                ))}
+                <Button variant="outline" className="w-full" onClick={() => handleS3Check("none")}>没有了</Button>
+              </div>
+            </div>
+          )}
+
+          {/* s3_guided_control */}
+          {screen === "s3_guided_control" && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-medium">这背后，有想要控制吗？</h2>
+              <p className="text-xs text-muted-foreground">想要控制局面、让事情按你的方式进行。</p>
+              <div className="flex gap-3">
+                <Button className="flex-1" onClick={() => handleGuidedWant("s3_guided_control", true)}>有</Button>
+                <Button variant="outline" className="flex-1" onClick={() => handleGuidedWant("s3_guided_control", false)}>没有</Button>
+              </div>
+            </div>
+          )}
+
+          {/* s3_guided_love */}
+          {screen === "s3_guided_love" && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-medium">这背后，有想要认同/爱吗？</h2>
+              <p className="text-xs text-muted-foreground">想要被理解、被看见、被接受、被爱。</p>
+              <div className="flex gap-3">
+                <Button className="flex-1" onClick={() => handleGuidedWant("s3_guided_love", true)}>有</Button>
+                <Button variant="outline" className="flex-1" onClick={() => handleGuidedWant("s3_guided_love", false)}>没有</Button>
+              </div>
+            </div>
+          )}
+
+          {/* s3_guided_safety */}
+          {screen === "s3_guided_safety" && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-medium">这背后，有想要安全/生存吗？</h2>
+              <p className="text-xs text-muted-foreground">担心失去、害怕未来没有保障。</p>
+              <div className="flex gap-3">
+                <Button className="flex-1" onClick={() => handleGuidedWant("s3_guided_safety", true)}>有</Button>
+                <Button variant="outline" className="flex-1" onClick={() => handleGuidedWant("s3_guided_safety", false)}>没有</Button>
+              </div>
+            </div>
+          )}
+
+          {/* return_feedback */}
+          {screen === "return_feedback" && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-medium">你注意到了：「{session.aiMessage}」</h2>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                打哈欠、昏昏欲睡、身体松动、干呕——这些都是系统在清理的信号。直接欢迎它，不需要分析。
+              </p>
+              <Button className="w-full" onClick={() => update({ screen: "return_to_topic", aiMessage: null })}>继续</Button>
+            </div>
+          )}
+
+          {/* return_to_topic */}
+          {screen === "return_to_topic" && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-medium">对于「{topicLabel}」，你还有什么感受吗？</h2>
+              <textarea
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleReturnFeelingSubmit(); } }}
+                placeholder="写下来……（如果没有感受了，可以选择结束）"
+                className="w-full min-h-[80px] resize-none rounded-xl border border-border bg-background px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30"
+              />
+              <Button className="w-full" onClick={handleReturnFeelingSubmit} disabled={!textInput.trim()}>继续释放</Button>
+              <Button variant="outline" className="w-full" onClick={handleComplete}>没有了，完成这次释放</Button>
+            </div>
+          )}
+
+          </div>
         </div>
-      </div>
-    </div>
-  );
-}
-
-// ---- 子组件 ----
-
-function BreathingCue() {
-  return (
-    <div className="flex justify-center py-4">
-      <div className="breathe-circle w-14 h-14 rounded-full bg-primary/20" />
-    </div>
-  );
-}
-
-function StepOpenText({
-  question, subtext, placeholder, value, onChange, onSubmit, loading,
-}: {
-  question: string; subtext?: string; placeholder?: string;
-  value: string; onChange: (v: string) => void; onSubmit: () => void; loading: boolean;
-}) {
-  return (
-    <div className="space-y-4">
-      <h2 className="text-xl font-medium leading-snug">{question}</h2>
-      {subtext && <p className="text-sm text-muted-foreground">{subtext}</p>}
-      <Textarea
-        placeholder={placeholder}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        rows={4}
-        className="resize-none"
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSubmit(); }
-        }}
-      />
-      <Button className="w-full" onClick={onSubmit} disabled={!value.trim() || loading}>
-        {loading ? "感应中……" : "继续"}
-      </Button>
-    </div>
-  );
-}
-
-function StepYesNo({ question, subtext, onAnswer }: {
-  question: string; subtext?: string; onAnswer: (answer: "是" | "否") => void;
-}) {
-  return (
-    <div className="space-y-5">
-      <BreathingCue />
-      <h2 className="text-xl font-medium leading-snug">{question}</h2>
-      {subtext && <p className="text-sm text-muted-foreground">{subtext}</p>}
-      <div className="flex gap-3">
-        <Button className="flex-1" onClick={() => onAnswer("是")}>是</Button>
-        <Button className="flex-1" variant="outline" onClick={() => onAnswer("否")}>否</Button>
-      </div>
-    </div>
-  );
-}
-
-function StepWhen({ onAnswer, note }: { onAnswer: (answer: "现在" | "稍后") => void; note?: string }) {
-  return (
-    <div className="space-y-5">
-      <BreathingCue />
-      <h2 className="text-xl font-medium">什么时候？</h2>
-      <p className="text-sm text-muted-foreground">When?</p>
-      {note && (
-        <p className="text-sm text-muted-foreground/80 leading-relaxed border-l-2 border-primary/30 pl-3">{note}</p>
-      )}
-      <div className="flex gap-3">
-        <Button className="flex-1" onClick={() => onAnswer("现在")}>现在</Button>
-        <Button className="flex-1" variant="outline" onClick={() => onAnswer("稍后")}>稍后</Button>
       </div>
     </div>
   );

@@ -19,6 +19,7 @@ export interface IdentifiedEmotion {
   levelEn?: string;     // 英文层级名
   levelIndex: EmotionLevelIndex;
   aiReply: string;
+  isKeywordSplit?: boolean; // true if split from multi-keyword identification, auto-advances without selection screen
 }
 
 export interface WantOption {
@@ -60,4 +61,5 @@ export interface SavedSession {
   summary: string;
   exitReason?: string;
   exitNotes?: string;
+  bodyFeeling?: string;
 }
