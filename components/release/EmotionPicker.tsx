@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { EMOTION_LEVELS } from "@/lib/release/emotions";
 import type { EmotionLevelInfo, EmotionKeyword } from "@/lib/release/emotions";
 import type { IdentifiedEmotion } from "@/types/release";
+import { useLang } from "@/lib/i18n";
 
 interface EmotionPickerProps {
   onSelect: (emotion: IdentifiedEmotion) => void;
@@ -17,6 +18,8 @@ interface SearchResult {
 }
 
 export function EmotionPicker({ onSelect, onCancel }: EmotionPickerProps) {
+  const { lang } = useLang();
+  const isEn = lang === "en";
   const [selectedLevel, setSelectedLevel] = useState<EmotionLevelInfo | null>(null);
   const [selectedKeywords, setSelectedKeywords] = useState<EmotionKeyword[]>([]);
   const [search, setSearch] = useState("");
@@ -39,7 +42,9 @@ export function EmotionPicker({ onSelect, onCancel }: EmotionPickerProps) {
       level: selectedLevel.name as IdentifiedEmotion["level"],
       levelEn: selectedLevel.nameEn,
       levelIndex: selectedLevel.index as IdentifiedEmotion["levelIndex"],
-      aiReply: `你选择了「${selectedLevel.name}」——${selectedKeywords.map((k) => k.zh).join("、")}。让我们一起来释放它。`,
+      aiReply: isEn
+        ? `You selected "${selectedLevel.nameEn}" — ${selectedKeywords.map((k) => k.en).join(", ")}. Let's release it.`
+        : `你选择了「${selectedLevel.name}」——${selectedKeywords.map((k) => k.zh).join("、")}。让我们一起来释放它。`,
     };
     onSelect(emotion);
   }
@@ -52,7 +57,9 @@ export function EmotionPicker({ onSelect, onCancel }: EmotionPickerProps) {
       level: result.level.name as IdentifiedEmotion["level"],
       levelEn: result.level.nameEn,
       levelIndex: result.level.index as IdentifiedEmotion["levelIndex"],
-      aiReply: `你选择了「${result.level.name}」——${result.keyword.zh}。让我们一起来释放它。`,
+      aiReply: isEn
+        ? `You selected "${result.level.nameEn}" — ${result.keyword.en}. Let's release it.`
+        : `你选择了「${result.level.name}」——${result.keyword.zh}。让我们一起来释放它。`,
     };
     onSelect(emotion);
   }
@@ -78,20 +85,26 @@ export function EmotionPicker({ onSelect, onCancel }: EmotionPickerProps) {
     return (
       <div className="space-y-4">
         <div>
-          <h2 className="text-xl font-medium leading-snug">选择你现在的情绪层级</h2>
-          <p className="text-sm text-muted-foreground mt-1">选最接近你当下感受的那一层</p>
+          <h2 className="text-xl font-medium leading-snug">
+            {isEn ? "Choose your current emotion level" : "选择你现在的情绪层级"}
+          </h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            {isEn ? "Pick the level closest to how you feel right now" : "选最接近你当下感受的那一层"}
+          </p>
         </div>
         <input
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="搜索情绪词……（中/英文）"
+          placeholder={isEn ? "Search emotions…" : "搜索情绪词……（中/英文）"}
           className="w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30"
         />
         {search.trim() ? (
           <div className="space-y-1 max-h-64 overflow-y-auto">
             {searchResults.length === 0 ? (
-              <p className="text-sm text-muted-foreground px-2 py-1">没有匹配的结果</p>
+              <p className="text-sm text-muted-foreground px-2 py-1">
+                {isEn ? "No results found" : "没有匹配的结果"}
+              </p>
             ) : (
               searchResults.map((r, i) => (
                 <button
@@ -99,9 +112,18 @@ export function EmotionPicker({ onSelect, onCancel }: EmotionPickerProps) {
                   onClick={() => handleSearchSelect(r)}
                   className="w-full text-left px-4 py-2.5 rounded-xl hover:bg-muted/50 transition-all duration-150"
                 >
-                  <span className="text-sm font-medium">{r.keyword.zh}</span>
-                  <span className="text-xs text-muted-foreground ml-1.5">{r.keyword.en}</span>
-                  <span className="text-xs text-muted-foreground/50 ml-2">· {r.level.name}</span>
+                  {isEn ? (
+                    <>
+                      <span className="text-sm font-medium">{r.keyword.en}</span>
+                      <span className="text-xs text-muted-foreground/50 ml-2">· {r.level.nameEn}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-sm font-medium">{r.keyword.zh}</span>
+                      <span className="text-xs text-muted-foreground ml-1.5">{r.keyword.en}</span>
+                      <span className="text-xs text-muted-foreground/50 ml-2">· {r.level.name}</span>
+                    </>
+                  )}
                 </button>
               ))
             )}
@@ -115,16 +137,25 @@ export function EmotionPicker({ onSelect, onCancel }: EmotionPickerProps) {
                 className="w-full text-left px-4 py-3 rounded-xl border border-border hover:border-primary/40 hover:bg-muted/50 transition-all duration-200"
               >
                 <div className="flex items-baseline gap-2">
-                  <span className="font-semibold text-sm">{level.name}</span>
-                  <span className="text-xs text-muted-foreground">{level.nameEn}</span>
-                  <span className="text-xs text-muted-foreground ml-auto">{level.core}</span>
+                  {isEn ? (
+                    <>
+                      <span className="font-semibold text-sm">{level.nameEn}</span>
+                      <span className="text-xs text-muted-foreground ml-auto">{level.coreEn ?? level.core}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-semibold text-sm">{level.name}</span>
+                      <span className="text-xs text-muted-foreground">{level.nameEn}</span>
+                      <span className="text-xs text-muted-foreground ml-auto">{level.core}</span>
+                    </>
+                  )}
                 </div>
               </button>
             ))}
           </div>
         )}
         <Button variant="ghost" size="sm" onClick={onCancel} className="w-full text-muted-foreground">
-          返回
+          {isEn ? "Back" : "返回"}
         </Button>
       </div>
     );
@@ -138,16 +169,20 @@ export function EmotionPicker({ onSelect, onCancel }: EmotionPickerProps) {
           onClick={() => { setSelectedLevel(null); setSelectedKeywords([]); setSearch(""); }}
           className="text-sm text-muted-foreground hover:text-foreground mb-3 flex items-center gap-1"
         >
-          ← 返回
+          {isEn ? "← Back" : "← 返回"}
         </button>
         <h2 className="text-xl font-medium leading-snug">
-          {selectedLevel.name}
-          <span className="text-base font-normal text-muted-foreground ml-2">/ {selectedLevel.nameEn}</span>
+          {isEn ? selectedLevel.nameEn : selectedLevel.name}
+          {!isEn && <span className="text-base font-normal text-muted-foreground ml-2">/ {selectedLevel.nameEn}</span>}
         </h2>
         <p className="text-sm text-muted-foreground mt-1">
-          选 1–2 个最贴近你感受的词
+          {isEn
+            ? `Pick 1–2 words that resonate most`
+            : "选 1–2 个最贴近你感受的词"}
           {selectedKeywords.length > 0 && (
-            <span className="ml-2 text-primary font-medium">已选 {selectedKeywords.length}/2</span>
+            <span className="ml-2 text-primary font-medium">
+              {isEn ? `${selectedKeywords.length}/2 selected` : `已选 ${selectedKeywords.length}/2`}
+            </span>
           )}
         </p>
       </div>
@@ -168,17 +203,22 @@ export function EmotionPicker({ onSelect, onCancel }: EmotionPickerProps) {
                   : "border-border hover:border-primary/40 hover:bg-muted/50"
               }`}
             >
-              {kw.zh}
-              <span className={`ml-1 text-xs ${isSelected ? "opacity-75" : "opacity-45"}`}>
-                {kw.en}
-              </span>
+              {isEn ? kw.en : (
+                <>
+                  {kw.zh}
+                  <span className={`ml-1 text-xs ${isSelected ? "opacity-75" : "opacity-45"}`}>
+                    {kw.en}
+                  </span>
+                </>
+              )}
             </button>
           );
         })}
       </div>
       <Button onClick={handleConfirm} disabled={selectedKeywords.length === 0} className="w-full">
-        确认选择
+        {isEn ? "Confirm" : "确认选择"}
       </Button>
     </div>
   );
 }
+

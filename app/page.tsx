@@ -1,73 +1,84 @@
+"use client";
+
 import Link from "next/link";
 import Image from "next/image";
 import { Button } from "@/components/ui/button";
+import { useLang } from "@/lib/i18n";
 
 export default function Home() {
+  const { t, lang, setLang } = useLang();
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-background px-4 py-12">
       <div className="max-w-sm w-full space-y-10">
         <div className="space-y-2 text-center">
-          <div className="flex justify-center">
+          <div className="flex justify-center relative">
             <div className="relative w-16 h-16">
               <Image src="/logo-brand-cropped.png" alt="Inner Tools" fill style={{ objectFit: "contain" }} className="[filter:sepia(1)_saturate(2.5)_hue-rotate(350deg)_brightness(1.35)]" />
             </div>
+            <button
+              onClick={() => setLang(lang === "zh" ? "en" : "zh")}
+              className="absolute right-0 top-1/2 -translate-y-1/2 text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors px-2 py-1 rounded-md border border-border/40 hover:border-border"
+            >
+              {t.langToggle}
+            </button>
           </div>
           <h1 className="text-2xl font-medium tracking-tight">Inner Tools</h1>
-          <p className="text-sm text-muted-foreground">内在工具箱</p>
+          <p className="text-sm text-muted-foreground">{t.home.subtitle}</p>
         </div>
 
-        {/* 引言 */}
+        {/* Quote */}
         <p className="text-xs text-muted-foreground/70 leading-relaxed border-l-2 border-border pl-3 italic">
-          「你必须要想要自由，大于想要被认可、掌控，或安全感。」
+          {t.home.quote}
           <br />
-          <span className="not-italic">—— Lester Levenson</span>
+          <span className="not-italic">{t.home.quoteAuthor}</span>
         </p>
 
-        {/* 圣多纳方法介绍 */}
+        {/* Method intro */}
         <div className="space-y-4">
           <div className="space-y-2">
-            <h2 className="text-base font-medium">圣多纳释放法</h2>
+            <h2 className="text-base font-medium">{t.home.methodTitle}</h2>
             <p className="text-sm text-muted-foreground leading-relaxed">
-              一种通过温和地问自己几个问题，来释放卡住的情绪的方法。不需要分析原因，不需要回忆过去——只是允许感受存在，然后选择放下。
+              {t.home.methodDesc}
             </p>
           </div>
           <div className="space-y-2 text-sm text-muted-foreground">
             <div className="flex gap-2.5">
               <span className="text-primary/60 shrink-0">1.</span>
-              <span>看见此刻的感受</span>
+              <span>{t.home.step1}</span>
             </div>
             <div className="flex gap-2.5">
               <span className="text-primary/60 shrink-0">2.</span>
-              <span>通过几个简单的「是 / 否」问题，一步步松开它</span>
+              <span>{t.home.step2}</span>
             </div>
             <div className="flex gap-2.5">
               <span className="text-primary/60 shrink-0">3.</span>
-              <span>探索情绪背后的深层「想要」，从根源释放</span>
+              <span>{t.home.step3}</span>
             </div>
           </div>
           <p className="text-xs text-muted-foreground/70 leading-relaxed border-l-2 border-border pl-3">
-            「想要」是指内心深处的渴望，比如想被认可、想有安全感、想掌控局面——情绪往往是这些未被满足的渴望的信号。
+            {t.home.wantNote}
           </p>
         </div>
 
         <div className="space-y-3">
           <Link href="/release/session" className="block">
             <Button className="w-full" size="lg">
-              开始圣多纳释放
+              {t.home.startBtn}
             </Button>
           </Link>
           <Link href="/release/history" className="block">
             <Button variant="outline" className="w-full">
-              查看释放记录
+              {t.home.historyBtn}
             </Button>
           </Link>
         </div>
 
         <p className="text-xs text-muted-foreground/50 text-center leading-relaxed">
-          此网站不收集任何个人数据。你填写的内容仅在当次会话中使用，不做其他用途。
+          {t.home.privacy}
         </p>
 
-        <p className="text-xs text-muted-foreground text-center">塔罗功能即将上线</p>
+        <p className="text-xs text-muted-foreground text-center">{t.home.tarot}</p>
       </div>
     </div>
   );

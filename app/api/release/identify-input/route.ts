@@ -18,7 +18,7 @@ const schema = {
     },
     aiReply: {
       type: "string",
-      description: "A brief, warm Chinese response. For topic_event: acknowledge and ask what feeling comes up. For feeling/body: acknowledge and transition into the release process.",
+      description: "A brief, warm response in the language specified by the lang parameter. For topic_event: acknowledge and ask what feeling comes up. For feeling/body: acknowledge and transition into the release process.",
     },
   },
   required: ["inputType", "label", "aiReply"],
@@ -28,7 +28,8 @@ export async function POST(req: NextRequest) {
   const ip = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "unknown";
   if (!checkRateLimit(ip).ok) return NextResponse.json({ error: "Too many requests" }, { status: 429 });
 
-  const { userInput } = await req.json();
+  const { userInput, lang } = await req.json();
+  const isEn = lang === "en";
 
   try {
     const message = await client.messages.create({
@@ -40,22 +41,23 @@ export async function POST(req: NextRequest) {
         {
           role: "user",
           content: `You are a Sedona Method facilitator. The user has just entered something they want to work on releasing.
+Response language: ${isEn ? "English" : "Chinese"}
 
 User input: "${userInput}"
 
 Identify what type of input this is:
-- topic_event: a situation, goal, relationship, event, memory, abstract concept, OR a bare body part noun with no sensation description (e.g. "原生家庭", "工作压力", "和朋友的矛盾", "家族业力", "下巴", "肩膀", "胃")
-- feeling: an emotion or feeling state (e.g. "焦虑", "愤怒", "难过", "想逃避")
-- body: a body part WITH a sensation/action/quality described (e.g. "胸口发紧", "头很沉", "肩膀紧绷", "下巴弹响", "胃在痉挛")
+- topic_event: a situation, goal, relationship, event, memory, abstract concept, OR a bare body part noun with no sensation description (e.g. "原生家庭", "work stress", "和朋友的矛盾", "jaw", "shoulder")
+- feeling: an emotion or feeling state (e.g. "焦虑", "angry", "难过", "want to escape")
+- body: a body part WITH a sensation/action/quality described (e.g. "胸口发紧", "heavy head", "tight shoulders", "stomach cramping")
 
 Priority rules:
 - If the input is ONLY a body part noun with no sensation qualifier → topic_event
 - If the input contains any emotional feeling → feeling (even if it also mentions a body part or topic)
 
-For aiReply:
-- topic_event: warm acknowledgment + "对于「{label}」，你现在有什么感受吗？"
+For aiReply (respond in ${isEn ? "English" : "Chinese"}):
+- topic_event: warm acknowledgment + ask what feeling comes up about "{label}"
 - feeling: warm acknowledgment of the feeling, prepare to enter release
-- body: warm acknowledgment + "关于这个「{label}」，你有什么感受吗？" (same pattern as topic_event)`,
+- body: warm acknowledgment + ask what feeling comes up about "{label}"`,
         },
       ],
     });
@@ -69,7 +71,7 @@ For aiReply:
     return NextResponse.json({
       inputType: "feeling",
       label: userInput.slice(0, 10),
-      aiReply: "好的，让我们来释放这个感受。",
+      aiReply: isEn ? "Okay, let's release this feeling." : "好的，让我们来释放这个感受。",
     });
   }
 }

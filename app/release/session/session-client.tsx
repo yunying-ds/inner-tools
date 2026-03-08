@@ -6,6 +6,8 @@ import { v4 as uuidv4 } from "uuid";
 import { Button } from "@/components/ui/button";
 import { EmotionPicker } from "@/components/release/EmotionPicker";
 import type { SavedSession, IdentifiedEmotion } from "@/types/release";
+import { useLang, interp } from "@/lib/i18n";
+import type { T } from "@/lib/i18n";
 
 // ---- Types ----
 
@@ -13,23 +15,23 @@ type InputType = "topic_event" | "feeling" | "body";
 type WantType = "control" | "recognition_love" | "safety";
 
 type Screen =
-  | "input_topic"          // Step 1: initial text input
-  | "topic_feeling_prompt" // Step 1: AI replied, ask for feeling about topic
-  | "body_guidance"        // Step 1: body sensation guidance
-  | "s2_allow"             // Step 2 Q1: 可以允许这个感受存在吗？
-  | "s2_letgo"             // Step 2 Q2: 可以让它离开吗？
-  | "s2_wouldyou"          // Step 2 Q3: 愿意吗？
-  | "s2_when"              // Step 2 Q4: 什么时候？
-  | "s2_eval"              // Step 2 Q5: 现在感受如何？
-  | "s2_nochange"          // Step 2: 没什么变化 sub-options
-  | "s3_select"            // Step 3: 这背后是想要...？
-  | "s3_letgo"             // Step 3: 可以让它离开吗？
-  | "s3_check"             // Step 3: 还有三大想要吗？
-  | "s3_guided_control"    // Step 3 guided: 有想要控制吗？
-  | "s3_guided_love"       // Step 3 guided: 有想要认同/爱吗？
-  | "s3_guided_safety"     // Step 3 guided: 有想要安全吗？
-  | "return_to_topic"      // 对于topic还有什么感受吗？
-  | "return_feedback"      // 释放反应反馈，回到return_to_topic
+  | "input_topic"
+  | "topic_feeling_prompt"
+  | "body_guidance"
+  | "s2_allow"
+  | "s2_letgo"
+  | "s2_wouldyou"
+  | "s2_when"
+  | "s2_eval"
+  | "s2_nochange"
+  | "s3_select"
+  | "s3_letgo"
+  | "s3_check"
+  | "s3_guided_control"
+  | "s3_guided_love"
+  | "s3_guided_safety"
+  | "return_to_topic"
+  | "return_feedback"
   | "complete";
 
 interface SessionState {
@@ -69,8 +71,8 @@ function createInitialSession(): SessionState {
   };
 }
 
-function saveToHistory(session: SessionState, status: "completed" | "abandoned") {
-  const label = session.topicLabel || session.topic || "未知";
+function saveToHistory(session: SessionState, status: "completed" | "abandoned", t: T) {
+  const label = session.topicLabel || session.topic || t.history.unknown;
   const saved: SavedSession = {
     id: session.id,
     startedAt: session.startedAt,
@@ -78,18 +80,27 @@ function saveToHistory(session: SessionState, status: "completed" | "abandoned")
     status,
     identifiedEmotion: session.identifiedEmotion ?? null,
     summary: status === "completed"
-      ? `释放了关于「${label}」的感受`
-      : `中止了对「${label}」的释放`,
+      ? interp(t.quick.releasedSummary, { label })
+      : interp(t.quick.abandonedSummary, { label }),
     ...(session.identifiedEmotion === null && session.feeling ? { bodyFeeling: session.feeling } : {}),
   };
   const existing = JSON.parse(localStorage.getItem("release_history") || "[]");
   localStorage.setItem("release_history", JSON.stringify([saved, ...existing]));
 }
 
+function emotionDisplay(emotion: IdentifiedEmotion, lang: string) {
+  const level = lang === "en" ? (emotion.levelEn ?? emotion.level) : emotion.level;
+  const words = lang === "en" && emotion.wordsEn && emotion.wordsEn.length > 0
+    ? emotion.wordsEn
+    : (emotion.wordsCn ?? emotion.words);
+  return { level, words };
+}
+
 // ---- Component ----
 
 export default function SessionPage({ onBack }: { onBack?: () => void }) {
   const router = useRouter();
+  const { t, lang } = useLang();
   const [session, setSession] = useState<SessionState>(createInitialSession);
   const [textInput, setTextInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -99,6 +110,7 @@ export default function SessionPage({ onBack }: { onBack?: () => void }) {
   const [emotionPickerOpen, setEmotionPickerOpen] = useState(false);
   const [releasedWants, setReleasedWants] = useState<WantType[]>([]);
   const [guidedLetgoNext, setGuidedLetgoNext] = useState<Screen | null>(null);
+  const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const update = useCallback((patch: Partial<SessionState>) => {
@@ -132,24 +144,27 @@ export default function SessionPage({ onBack }: { onBack?: () => void }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
-        body: JSON.stringify({ userInput: input }),
+        body: JSON.stringify({ userInput: input, lang }),
       });
       clearTimeout(timeout);
       const data: IdentifiedEmotion = await res.json();
       setSession((prev) => ({ ...prev, identifiedEmotion: data }));
     } catch {
-      // silently fail — display falls back to raw input
+      // silently fail
     }
   }
 
   const screen = session.screen;
-  const feeling = session.feeling || "这个感受";
-  const topicLabel = session.topicLabel || session.topic || "这个";
-const wantLabel: Record<WantType, string> = {
-    control: "想要控制",
-    recognition_love: "想要认同/爱",
-    safety: "想要安全/生存",
+  const feeling = session.feeling || t.quick.feelingFallback;
+  const topicLabel = session.topicLabel || session.topic || t.quick.topicFallback;
+
+  const wantLabel: Record<WantType, string> = {
+    control: t.quick.wantControl,
+    recognition_love: t.quick.wantLove,
+    safety: t.quick.wantSafety,
   };
+
+  const sep = lang === "zh" ? "、" : ", ";
 
   // ---- Step 1 ----
 
@@ -165,7 +180,7 @@ const wantLabel: Record<WantType, string> = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
-        body: JSON.stringify({ userInput: input }),
+        body: JSON.stringify({ userInput: input, lang }),
       });
       const data = await res.json();
       const inputType: InputType = data.inputType ?? "feeling";
@@ -186,14 +201,13 @@ const wantLabel: Record<WantType, string> = {
     }
   }
 
-  const VAGUE_PATTERN = /不知道|不清楚|不确定|没有|没感受|没什么|不太清楚|不明确|不知|说不清/;
-
   function handleFeelingSubmit() {
     if (!textInput.trim()) return;
     const input = textInput.trim();
     setTextInput("");
-    if (session.inputType === "body" && VAGUE_PATTERN.test(input)) {
-      update({ feeling: session.topicLabel, identifiedEmotion: null, screen: "s2_allow", aiMessage: `好的，就感受「${session.topicLabel}」那个感觉。` });
+    const vaguePattern = new RegExp(t.quick.vaguePattern, "i");
+    if (session.inputType === "body" && vaguePattern.test(input)) {
+      update({ feeling: session.topicLabel, identifiedEmotion: null, screen: "s2_allow", aiMessage: interp(t.quick.bodySensationMsg, { topic: session.topicLabel }) });
       return;
     }
     update({ feeling: input, identifiedEmotion: null, screen: "s2_allow", aiMessage: null });
@@ -202,7 +216,8 @@ const wantLabel: Record<WantType, string> = {
 
   function handleEmotionPickerSelect(emotion: IdentifiedEmotion) {
     setEmotionPickerOpen(false);
-    const label = emotion.wordsCn?.[0] ?? emotion.words[0] ?? emotion.level;
+    const { words } = emotionDisplay(emotion, lang);
+    const label = words[0] ?? emotion.level;
     update({ feeling: label, identifiedEmotion: emotion, screen: "s2_allow", aiMessage: null });
   }
 
@@ -225,13 +240,13 @@ const wantLabel: Record<WantType, string> = {
       update({ screen: "s3_select", aiMessage: null, step2LoopCount: 0 });
     } else if (result === "lighter") {
       if (newCount >= MAX_STEP2_LOOPS) {
-        update({ screen: "s3_select", aiMessage: "感受持续存在，让我们看看背后深层的渴望", step2LoopCount: newCount });
+        update({ screen: "s3_select", aiMessage: t.quick.feelingPersistsMsg, step2LoopCount: newCount });
       } else {
         update({ screen: "s2_letgo", aiMessage: null, step2LoopCount: newCount });
       }
     } else {
       if (newCount >= MAX_STEP2_LOOPS) {
-        update({ screen: "s3_select", aiMessage: "让我们直接看看背后的渴望", step2LoopCount: newCount });
+        update({ screen: "s3_select", aiMessage: t.quick.directWantsMsg, step2LoopCount: newCount });
       } else {
         update({ screen: "s2_nochange", step2LoopCount: newCount });
       }
@@ -279,30 +294,31 @@ const wantLabel: Record<WantType, string> = {
   }
 
   function handleComplete() {
-    saveToHistory(session, "completed");
+    saveToHistory(session, "completed", t);
     setCompleted(true);
   }
 
-// ---- Completion screen ----
+  // ---- Completion screen ----
 
   if (completed) {
+    const emDisp = session.identifiedEmotion ? emotionDisplay(session.identifiedEmotion, lang) : null;
     return (
       <div className="min-h-screen bg-background flex items-center justify-center px-6">
         <div className="max-w-md w-full text-center space-y-6 step-animate">
           <div className="text-3xl text-muted-foreground">✦</div>
-          <h2 className="text-xl font-medium">这次释放完成了</h2>
-          <p className="text-sm text-muted-foreground">你释放了关于「{topicLabel}」的感受</p>
+          <h2 className="text-xl font-medium">{t.quick.completedHeading}</h2>
+          <p className="text-sm text-muted-foreground">{interp(t.quick.completedSubtext, { topic: topicLabel })}</p>
           {(session.identifiedEmotion || session.feeling) && (
             <div className="text-left border border-border rounded-xl px-4 py-3 space-y-1.5">
               <p className="text-sm font-medium text-foreground">
-                {session.identifiedEmotion ? (
+                {emDisp ? (
                   <>
-                    {session.identifiedEmotion.level}
-                    {(session.identifiedEmotion.wordsCn ?? session.identifiedEmotion.words).length > 0 && (
-                      <span className="font-normal text-muted-foreground"> · {(session.identifiedEmotion.wordsCn ?? session.identifiedEmotion.words).join("、")}</span>
+                    {emDisp.level}
+                    {emDisp.words.length > 0 && (
+                      <span className="font-normal text-muted-foreground"> · {emDisp.words.join(sep)}</span>
                     )}
-                    {session.identifiedEmotion.wordsEn && session.identifiedEmotion.wordsEn.length > 0 && (
-                      <span className="font-normal text-muted-foreground/50"> ({session.identifiedEmotion.wordsEn.join(", ")})</span>
+                    {lang === "zh" && session.identifiedEmotion!.wordsEn && session.identifiedEmotion!.wordsEn.length > 0 && (
+                      <span className="font-normal text-muted-foreground/50"> ({session.identifiedEmotion!.wordsEn.join(", ")})</span>
                     )}
                   </>
                 ) : (
@@ -310,16 +326,16 @@ const wantLabel: Record<WantType, string> = {
                 )}
               </p>
               {releasedWants.length > 0 && (
-                <p className="text-xs text-muted-foreground">背后的想要：{releasedWants.map((w) => wantLabel[w]).join("、")}</p>
+                <p className="text-xs text-muted-foreground">{t.quick.releasedWantsLabel}{releasedWants.map((w) => wantLabel[w]).join(sep)}</p>
               )}
             </div>
           )}
           <div className="flex flex-col gap-3 pt-2">
             <Button onClick={() => { setSession(createInitialSession()); setCompleted(false); setTextInput(""); setScreenHistory([]); setReleasedWants([]); }}>
-              开始新的释放
+              {t.quick.startNew}
             </Button>
-            <Button variant="outline" onClick={() => router.push("/release/history")}>查看记录</Button>
-            <Button variant="ghost" onClick={() => router.push("/")}>返回首页</Button>
+            <Button variant="outline" onClick={() => router.push("/release/history")}>{t.quick.viewHistory}</Button>
+            <Button variant="ghost" onClick={() => router.push("/")}>{t.quick.goHome}</Button>
           </div>
         </div>
       </div>
@@ -328,19 +344,21 @@ const wantLabel: Record<WantType, string> = {
 
   // ---- Main render ----
 
+  const emStrip = session.identifiedEmotion ? emotionDisplay(session.identifiedEmotion, lang) : null;
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-border/40">
         <button onClick={goBack} className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-          ← 返回
+          {t.common.back}
         </button>
-        <span className="text-xs text-muted-foreground">圣多纳释放法</span>
+        <span className="text-xs text-muted-foreground">{t.quick.headerTitle}</span>
         <button
-          onClick={() => { saveToHistory(session, "abandoned"); router.back(); }}
+          onClick={() => setExitConfirmOpen(true)}
           className="text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
-          退出
+          {t.common.exit}
         </button>
       </div>
 
@@ -348,15 +366,16 @@ const wantLabel: Record<WantType, string> = {
       <div className="flex-1 flex items-start justify-center px-6 pt-10">
         <div className="max-w-lg w-full">
 
-          {/* Context strip — stable across transitions */}
+          {/* Context strip */}
           {screen !== "input_topic" && session.topicLabel && (
             <div className="mb-6 flex items-center gap-2 flex-wrap">
               <span className="text-xs px-2.5 py-1 rounded-full bg-muted border border-border/40 text-muted-foreground">
                 {session.topicLabel}
               </span>
-              {session.identifiedEmotion?.wordsCn?.[0] && (
+              {emStrip && emStrip.words[0] && (
                 <span className="text-xs text-muted-foreground/60">
-                  {session.identifiedEmotion.wordsCn[0]}{session.identifiedEmotion.wordsEn?.[0] ? ` · ${session.identifiedEmotion.wordsEn[0]}` : ""}
+                  {emStrip.words[0]}
+                  {lang === "zh" && session.identifiedEmotion?.wordsEn?.[0] ? ` · ${session.identifiedEmotion.wordsEn[0]}` : ""}
                 </span>
               )}
             </div>
@@ -371,19 +390,19 @@ const wantLabel: Record<WantType, string> = {
           {/* input_topic */}
           {screen === "input_topic" && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">今天想关于什么释放？</h2>
-              <p className="text-sm text-muted-foreground">可以是一个目标、一件事、一种感受，甚至是身体的感觉。</p>
+              <h2 className="text-xl font-medium">{t.quick.inputHeading}</h2>
+              <p className="text-sm text-muted-foreground">{t.quick.inputSubtext}</p>
               <textarea
                 ref={inputRef}
                 value={textInput}
                 onChange={(e) => setTextInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleTopicSubmit(); } }}
-                placeholder="写下来……"
+                placeholder={t.quick.inputPlaceholder}
                 className="w-full min-h-[100px] resize-none rounded-xl border border-border bg-background px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30"
                 disabled={loading}
               />
               <Button className="w-full" onClick={handleTopicSubmit} disabled={!textInput.trim() || loading}>
-                {loading ? "感应中……" : "继续"}
+                {loading ? t.common.loading : t.common.continue}
               </Button>
             </div>
           )}
@@ -391,33 +410,33 @@ const wantLabel: Record<WantType, string> = {
           {/* topic_feeling_prompt */}
           {screen === "topic_feeling_prompt" && !emotionPickerOpen && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">对于「{topicLabel}」，你有什么感受吗？</h2>
-              <p className="text-xs text-muted-foreground">不清楚也可以先写"不清楚"，保持在身体感受就好。</p>
+              <h2 className="text-xl font-medium">{interp(t.quick.feelingHeading, { topic: topicLabel })}</h2>
+              <p className="text-xs text-muted-foreground">{t.quick.feelingSubtext}</p>
               <textarea
                 value={textInput}
                 onChange={(e) => setTextInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleFeelingSubmit(); } }}
-                placeholder="写下你的感受……"
+                placeholder={t.quick.feelingPlaceholder}
                 className="w-full min-h-[80px] resize-none rounded-xl border border-border bg-background px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30"
               />
-              <Button className="w-full" onClick={handleFeelingSubmit} disabled={!textInput.trim()}>继续</Button>
+              <Button className="w-full" onClick={handleFeelingSubmit} disabled={!textInput.trim()}>{t.common.continue}</Button>
               <button
                 onClick={() => setEmotionPickerOpen(true)}
                 className="w-full text-xs text-muted-foreground/50 hover:text-muted-foreground text-center py-1 transition-colors"
               >
-                从情绪表选择
+                {t.quick.fromEmotionTable}
               </button>
               <button
                 onClick={() => {
                   if (session.inputType === "body") {
-                    update({ feeling: session.topicLabel, identifiedEmotion: null, screen: "s2_allow", aiMessage: `好的，就感受「${session.topicLabel}」那个感觉。` });
+                    update({ feeling: session.topicLabel, identifiedEmotion: null, screen: "s2_allow", aiMessage: interp(t.quick.bodySensationMsg, { topic: session.topicLabel }) });
                   } else {
-                    update({ feeling: session.topic, screen: "body_guidance", aiMessage: "保持在身体的感受，不需要想清楚。" });
+                    update({ feeling: session.topic, screen: "body_guidance", aiMessage: null });
                   }
                 }}
                 className="w-full text-xs text-muted-foreground/50 hover:text-muted-foreground text-center py-1 transition-colors"
               >
-                不知道 / 不清楚
+                {t.quick.dontKnow}
               </button>
             </div>
           )}
@@ -432,11 +451,11 @@ const wantLabel: Record<WantType, string> = {
           {/* body_guidance */}
           {screen === "body_guidance" && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">这个感受在身体哪里？感觉像什么？</h2>
+              <h2 className="text-xl font-medium">{t.quick.bodyHeading}</h2>
               <p className="text-sm text-muted-foreground leading-relaxed italic">
-                "It might be a strong feeling or a subtle feeling, or a mixture of feelings. Try to identify what it is, but keep mental discussion and rumination to a minimum."
+                &quot;It might be a strong feeling or a subtle feeling, or a mixture of feelings. Try to identify what it is, but keep mental discussion and rumination to a minimum.&quot;
               </p>
-              <p className="text-sm text-muted-foreground">保持在身体的感受里，不要分析它，直接欢迎它的存在。</p>
+              <p className="text-sm text-muted-foreground">{t.quick.bodySubtext}</p>
               <textarea
                 value={textInput}
                 onChange={(e) => setTextInput(e.target.value)}
@@ -448,30 +467,30 @@ const wantLabel: Record<WantType, string> = {
                     setTextInput("");
                   }
                 }}
-                placeholder="描述一下这个感受……（可选）"
+                placeholder={t.quick.bodyPlaceholder}
                 className="w-full min-h-[80px] resize-none rounded-xl border border-border bg-background px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30"
               />
               <Button className="w-full" onClick={() => {
                 const val = textInput.trim();
                 update({ ...(val ? { feeling: val, identifiedEmotion: null } : {}), screen: "s2_allow", aiMessage: null });
                 setTextInput("");
-              }}>好，我感受到了</Button>
+              }}>{t.quick.bodyBtn}</Button>
             </div>
           )}
 
           {/* s2_allow */}
           {screen === "s2_allow" && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">你可以允许这个「{feeling}」存在吗？</h2>
-              {session.identifiedEmotion?.wordsEn?.[0] && (
+              <h2 className="text-xl font-medium">{interp(t.quick.allowHeading, { feeling })}</h2>
+              {emStrip && emStrip.words[0] && (
                 <p className="text-xs text-muted-foreground italic">
-                  {session.identifiedEmotion.wordsCn?.[0] && `${session.identifiedEmotion.wordsCn[0]} · `}{session.identifiedEmotion.wordsEn[0]}
+                  {emStrip.level} · {emStrip.words[0]}
                 </p>
               )}
-              <p className="text-xs text-muted-foreground">无论你的答案是什么，都可以进入下一步。</p>
+              <p className="text-xs text-muted-foreground">{t.common.any}</p>
               <div className="flex gap-3">
-                <Button className="flex-1" onClick={advanceS2}>可以</Button>
-                <Button variant="outline" className="flex-1" onClick={advanceS2}>不可以</Button>
+                <Button className="flex-1" onClick={advanceS2}>{t.common.yes}</Button>
+                <Button variant="outline" className="flex-1" onClick={advanceS2}>{t.common.no}</Button>
               </div>
             </div>
           )}
@@ -479,12 +498,12 @@ const wantLabel: Record<WantType, string> = {
           {/* s2_letgo */}
           {screen === "s2_letgo" && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">可以让它离开吗？</h2>
+              <h2 className="text-xl font-medium">{t.quick.letgoHeading}</h2>
               <p className="text-xs text-muted-foreground italic">Could you let it go?</p>
-              <p className="text-xs text-muted-foreground">无论你的答案是什么，都可以进入下一步。</p>
+              <p className="text-xs text-muted-foreground">{t.common.any}</p>
               <div className="flex gap-3">
-                <Button className="flex-1" onClick={advanceS2}>可以</Button>
-                <Button variant="outline" className="flex-1" onClick={advanceS2}>不可以</Button>
+                <Button className="flex-1" onClick={advanceS2}>{t.common.yes}</Button>
+                <Button variant="outline" className="flex-1" onClick={advanceS2}>{t.common.no}</Button>
               </div>
             </div>
           )}
@@ -492,11 +511,11 @@ const wantLabel: Record<WantType, string> = {
           {/* s2_wouldyou */}
           {screen === "s2_wouldyou" && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">愿意吗？</h2>
+              <h2 className="text-xl font-medium">{t.quick.wouldyouHeading}</h2>
               <p className="text-xs text-muted-foreground italic">Would you?</p>
               <div className="flex gap-3">
-                <Button className="flex-1" onClick={advanceS2}>愿意</Button>
-                <Button variant="outline" className="flex-1" onClick={advanceS2}>不愿意</Button>
+                <Button className="flex-1" onClick={advanceS2}>{t.common.willing}</Button>
+                <Button variant="outline" className="flex-1" onClick={advanceS2}>{t.common.unwilling}</Button>
               </div>
             </div>
           )}
@@ -504,11 +523,11 @@ const wantLabel: Record<WantType, string> = {
           {/* s2_when */}
           {screen === "s2_when" && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">什么时候？</h2>
+              <h2 className="text-xl font-medium">{t.quick.whenHeading}</h2>
               <p className="text-xs text-muted-foreground italic">When?</p>
               <div className="flex gap-3">
-                <Button className="flex-1" onClick={advanceS2}>现在</Button>
-                <Button variant="outline" className="flex-1" onClick={advanceS2}>稍后</Button>
+                <Button className="flex-1" onClick={advanceS2}>{t.common.now}</Button>
+                <Button variant="outline" className="flex-1" onClick={advanceS2}>{t.common.later}</Button>
               </div>
             </div>
           )}
@@ -516,13 +535,15 @@ const wantLabel: Record<WantType, string> = {
           {/* s2_eval */}
           {screen === "s2_eval" && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">现在感受如何？</h2>
+              <h2 className="text-xl font-medium">{t.quick.evalHeading}</h2>
               <div className="space-y-3">
                 <div className="flex gap-3">
-                  <Button className="flex-1" onClick={() => handleS2Eval("lighter")}>还有一些，但轻了</Button>
-                  <Button variant="outline" className="flex-1" onClick={() => handleS2Eval("better")}>好多了 / 轻盈了</Button>
+                  <Button className="flex-1" onClick={() => handleS2Eval("lighter")}>{t.quick.lighter}</Button>
+                  <Button variant="outline" className="flex-1" onClick={() => handleS2Eval("better")}>{t.quick.better}</Button>
                 </div>
-                <button className="w-full text-xs text-muted-foreground/50 py-2 hover:text-muted-foreground transition-colors" onClick={() => handleS2Eval("nochange")}>没什么变化</button>
+                <button className="w-full text-xs text-muted-foreground/50 py-2 hover:text-muted-foreground transition-colors" onClick={() => handleS2Eval("nochange")}>
+                  {lang === "zh" ? "没什么变化" : "No change"}
+                </button>
               </div>
             </div>
           )}
@@ -530,13 +551,13 @@ const wantLabel: Record<WantType, string> = {
           {/* s2_nochange */}
           {screen === "s2_nochange" && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">没关系，我们换个方式继续。</h2>
+              <h2 className="text-xl font-medium">{t.quick.nochangeHeading}</h2>
               <div className="space-y-3">
-                <Button className="w-full" onClick={() => update({ screen: "return_to_topic", aiMessage: "换个角度感受一下，对于这个，你还有什么其他感受吗？" })}>
-                  换个角度感受
+                <Button className="w-full" onClick={() => update({ screen: "return_to_topic", aiMessage: t.quick.changeAngleMsg })}>
+                  {t.quick.changeAngle}
                 </Button>
                 <Button variant="outline" className="w-full" onClick={() => update({ screen: "s3_select", aiMessage: null })}>
-                  直接释放背后的想要
+                  {t.quick.releaseWants}
                 </Button>
               </div>
             </div>
@@ -545,7 +566,7 @@ const wantLabel: Record<WantType, string> = {
           {/* s3_select */}
           {screen === "s3_select" && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">在「{feeling}」背后，你最想要的是……</h2>
+              <h2 className="text-xl font-medium">{interp(t.quick.selectHeading, { feeling })}</h2>
               <div className="space-y-3">
                 {(["control", "recognition_love", "safety"] as WantType[]).map((w) => (
                   <button
@@ -560,7 +581,7 @@ const wantLabel: Record<WantType, string> = {
                   onClick={() => update({ screen: "s3_guided_control", aiMessage: null })}
                   className="w-full text-xs text-muted-foreground/50 hover:text-muted-foreground text-center py-2 transition-colors"
                 >
-                  不知道
+                  {lang === "zh" ? "不知道" : "Not sure"}
                 </button>
               </div>
             </div>
@@ -569,11 +590,11 @@ const wantLabel: Record<WantType, string> = {
           {/* s3_letgo */}
           {screen === "s3_letgo" && session.selectedWant && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">可以让这个「{wantLabel[session.selectedWant]}」离开吗？</h2>
-              <p className="text-xs text-muted-foreground">无论你的答案是什么，注意到它就是在释放。</p>
+              <h2 className="text-xl font-medium">{interp(lang === "zh" ? "可以让这个「{want}」离开吗？" : "Could you let this \"{want}\" go?", { want: wantLabel[session.selectedWant] })}</h2>
+              <p className="text-xs text-muted-foreground">{t.quick.s3letgoSubtext}</p>
               <div className="flex gap-3">
-                <Button className="flex-1" onClick={() => { const next = guidedLetgoNext ?? "s3_check"; setGuidedLetgoNext(null); update({ screen: next, aiMessage: null }); }}>可以</Button>
-                <Button variant="outline" className="flex-1" onClick={() => { const next = guidedLetgoNext ?? "s3_check"; setGuidedLetgoNext(null); update({ screen: next, aiMessage: null }); }}>不可以</Button>
+                <Button className="flex-1" onClick={() => { const next = guidedLetgoNext ?? "s3_check"; setGuidedLetgoNext(null); update({ screen: next, aiMessage: null }); }}>{t.common.yes}</Button>
+                <Button variant="outline" className="flex-1" onClick={() => { const next = guidedLetgoNext ?? "s3_check"; setGuidedLetgoNext(null); update({ screen: next, aiMessage: null }); }}>{t.common.no}</Button>
               </div>
             </div>
           )}
@@ -581,7 +602,7 @@ const wantLabel: Record<WantType, string> = {
           {/* s3_check */}
           {screen === "s3_check" && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">「{feeling}」背后还有……</h2>
+              <h2 className="text-xl font-medium">{interp(t.quick.checkHeading, { feeling })}</h2>
               <div className="space-y-3">
                 {(["control", "recognition_love", "safety"] as WantType[]).map((w) => (
                   <button
@@ -592,7 +613,7 @@ const wantLabel: Record<WantType, string> = {
                     <p className="font-medium text-sm">{wantLabel[w]}</p>
                   </button>
                 ))}
-                <Button variant="outline" className="w-full" onClick={() => handleS3Check("none")}>没有了</Button>
+                <Button variant="outline" className="w-full" onClick={() => handleS3Check("none")}>{lang === "zh" ? "没有了" : "None"}</Button>
               </div>
             </div>
           )}
@@ -600,11 +621,11 @@ const wantLabel: Record<WantType, string> = {
           {/* s3_guided_control */}
           {screen === "s3_guided_control" && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">这背后，有想要控制吗？</h2>
-              <p className="text-xs text-muted-foreground">想要控制局面、让事情按你的方式进行。</p>
+              <h2 className="text-xl font-medium">{t.quick.guidedControlHeading}</h2>
+              <p className="text-xs text-muted-foreground">{t.quick.guidedControlSubtext}</p>
               <div className="flex gap-3">
-                <Button className="flex-1" onClick={() => handleGuidedWant("s3_guided_control", true)}>有</Button>
-                <Button variant="outline" className="flex-1" onClick={() => handleGuidedWant("s3_guided_control", false)}>没有</Button>
+                <Button className="flex-1" onClick={() => handleGuidedWant("s3_guided_control", true)}>{t.common.hasIt}</Button>
+                <Button variant="outline" className="flex-1" onClick={() => handleGuidedWant("s3_guided_control", false)}>{t.common.noIt}</Button>
               </div>
             </div>
           )}
@@ -612,11 +633,11 @@ const wantLabel: Record<WantType, string> = {
           {/* s3_guided_love */}
           {screen === "s3_guided_love" && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">这背后，有想要认同/爱吗？</h2>
-              <p className="text-xs text-muted-foreground">想要被理解、被看见、被接受、被爱。</p>
+              <h2 className="text-xl font-medium">{t.quick.guidedLoveHeading}</h2>
+              <p className="text-xs text-muted-foreground">{t.quick.guidedLoveSubtext}</p>
               <div className="flex gap-3">
-                <Button className="flex-1" onClick={() => handleGuidedWant("s3_guided_love", true)}>有</Button>
-                <Button variant="outline" className="flex-1" onClick={() => handleGuidedWant("s3_guided_love", false)}>没有</Button>
+                <Button className="flex-1" onClick={() => handleGuidedWant("s3_guided_love", true)}>{t.common.hasIt}</Button>
+                <Button variant="outline" className="flex-1" onClick={() => handleGuidedWant("s3_guided_love", false)}>{t.common.noIt}</Button>
               </div>
             </div>
           )}
@@ -624,11 +645,11 @@ const wantLabel: Record<WantType, string> = {
           {/* s3_guided_safety */}
           {screen === "s3_guided_safety" && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">这背后，有想要安全/生存吗？</h2>
-              <p className="text-xs text-muted-foreground">担心失去、害怕未来没有保障。</p>
+              <h2 className="text-xl font-medium">{t.quick.guidedSafetyHeading}</h2>
+              <p className="text-xs text-muted-foreground">{t.quick.guidedSafetySubtext}</p>
               <div className="flex gap-3">
-                <Button className="flex-1" onClick={() => handleGuidedWant("s3_guided_safety", true)}>有</Button>
-                <Button variant="outline" className="flex-1" onClick={() => handleGuidedWant("s3_guided_safety", false)}>没有</Button>
+                <Button className="flex-1" onClick={() => handleGuidedWant("s3_guided_safety", true)}>{t.common.hasIt}</Button>
+                <Button variant="outline" className="flex-1" onClick={() => handleGuidedWant("s3_guided_safety", false)}>{t.common.noIt}</Button>
               </div>
             </div>
           )}
@@ -636,33 +657,56 @@ const wantLabel: Record<WantType, string> = {
           {/* return_feedback */}
           {screen === "return_feedback" && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">你注意到了：「{session.aiMessage}」</h2>
+              <h2 className="text-xl font-medium">{interp(t.quick.feedbackHeading, { msg: session.aiMessage ?? "" })}</h2>
               <p className="text-sm text-muted-foreground leading-relaxed">
-                打哈欠、昏昏欲睡、身体松动、干呕——这些都是系统在清理的信号。直接欢迎它，不需要分析。
+                {t.quick.feedbackBody}
               </p>
-              <Button className="w-full" onClick={() => update({ screen: "return_to_topic", aiMessage: null })}>继续</Button>
+              <Button className="w-full" onClick={() => update({ screen: "return_to_topic", aiMessage: null })}>{t.common.continue}</Button>
             </div>
           )}
 
           {/* return_to_topic */}
           {screen === "return_to_topic" && (
             <div className="space-y-5">
-              <h2 className="text-xl font-medium">对于「{topicLabel}」，你还有什么感受吗？</h2>
+              <h2 className="text-xl font-medium">{interp(t.quick.returnHeading, { topic: topicLabel })}</h2>
               <textarea
                 value={textInput}
                 onChange={(e) => setTextInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleReturnFeelingSubmit(); } }}
-                placeholder="写下来……（如果没有感受了，可以选择结束）"
+                placeholder={t.quick.returnPlaceholder}
                 className="w-full min-h-[80px] resize-none rounded-xl border border-border bg-background px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30"
               />
-              <Button className="w-full" onClick={handleReturnFeelingSubmit} disabled={!textInput.trim()}>继续释放</Button>
-              <Button variant="outline" className="w-full" onClick={handleComplete}>没有了，完成这次释放</Button>
+              <Button className="w-full" onClick={handleReturnFeelingSubmit} disabled={!textInput.trim()}>{t.common.continueRelease}</Button>
+              <Button variant="outline" className="w-full" onClick={handleComplete}>{t.quick.finishRelease}</Button>
             </div>
           )}
 
           </div>
         </div>
       </div>
+
+      {/* Exit confirm dialog */}
+      {exitConfirmOpen && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-background rounded-2xl px-6 py-6 mx-6 max-w-sm w-full shadow-xl space-y-4">
+            <p className="text-base font-medium text-center">{t.common.exitConfirmTitle}</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setExitConfirmOpen(false)}
+                className="flex-1 py-2 rounded-xl border border-border text-sm hover:bg-muted/50 transition-colors"
+              >
+                {t.common.exitConfirmCancel}
+              </button>
+              <button
+                onClick={() => { saveToHistory(session, "abandoned", t); router.back(); }}
+                className="flex-1 py-2 rounded-xl bg-foreground text-background text-sm hover:opacity-80 transition-opacity"
+              >
+                {t.common.exitConfirmOk}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

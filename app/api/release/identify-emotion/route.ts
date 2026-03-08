@@ -22,7 +22,7 @@ const emotionSchema = {
     level: { type: "string", description: "Chinese level name: 冷漠/悲伤/恐惧/欲望/愤怒/骄傲/勇气/接纳/平静" },
     levelEn: { type: "string", description: "English level name: Apathy/Grief/Fear/Lust/Anger/Pride/Courageousness/Acceptance/Peace" },
     levelIndex: { type: "number", description: "Level index 1-9" },
-    aiReply: { type: "string", description: "Warm, brief acknowledgment in Chinese" },
+    aiReply: { type: "string", description: "Warm, brief acknowledgment in the language matching the lang parameter" },
     allEmotions: {
       type: "array",
       description: "Only when multiple distinct emotion levels detected",
@@ -46,7 +46,8 @@ export async function POST(req: NextRequest) {
   const ip = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "unknown";
   if (!checkRateLimit(ip).ok) return NextResponse.json({ error: "Too many requests" }, { status: 429 });
 
-  const { userInput } = await req.json();
+  const { userInput, lang } = await req.json();
+  const isEn = lang === "en";
 
   try {
     const message = await client.messages.create({
@@ -64,6 +65,7 @@ export async function POST(req: NextRequest) {
         {
           role: "user",
           content: `You are a Sedona Method facilitator. Identify the emotion(s) from the official AGFLAP-CAP chart.
+Response language for aiReply: ${isEn ? "English" : "Chinese"}
 
 Official emotion chart:
 ${EMOTION_TABLE}
@@ -71,11 +73,11 @@ ${EMOTION_TABLE}
 User's description: "${userInput}"
 
 Instructions:
-1. Select English keywords from the chart — one keyword per distinct feeling the user mentioned (up to 3). If the user named 3 distinct feelings, return 3 keywords. Do NOT merge or collapse multiple feelings into one keyword.
-2. Translate them to Chinese based on the USER'S SPECIFIC CONTEXT — not a mechanical dictionary translation. For example, "dread" might become "恐惧" for a medical situation, "忐忑" for a job interview, or "不敢想" for something traumatic.
+1. Select English keywords from the chart — one keyword per distinct feeling the user mentioned (up to 3). Do NOT merge or collapse multiple feelings into one keyword.
+2. Translate them to Chinese based on the USER'S SPECIFIC CONTEXT — not a mechanical dictionary translation.
 3. Identify the primary emotion level
 4. If multiple distinct levels are present (e.g., both Fear and Anger), list all in allEmotions
-5. aiReply: warm, brief Chinese acknowledgment (1 sentence). Single emotion: "听起来你现在感到……"; Mixed: "我感受到……和……交织在一起"
+5. aiReply: warm, brief acknowledgment in ${isEn ? "English" : "Chinese"} (1 sentence).
 6. Keep wordsCn natural and resonant — the user should recognize themselves in the words`,
         },
       ],
@@ -90,7 +92,7 @@ Instructions:
         level: "恐惧",
         levelEn: "Fear",
         levelIndex: 3,
-        aiReply: "我听到了你的描述，让我们继续。",
+        aiReply: isEn ? "I hear you. Let's continue." : "我听到了你的描述，让我们继续。",
       });
     }
 
@@ -116,7 +118,7 @@ Instructions:
       level: "恐惧",
       levelEn: "Fear",
       levelIndex: 3,
-      aiReply: "我听到了你的描述。让我们继续这个过程。",
+      aiReply: isEn ? "I hear you. Let's continue." : "我听到了你的描述。让我们继续这个过程。",
       _aiUnavailable: true,
     });
   }

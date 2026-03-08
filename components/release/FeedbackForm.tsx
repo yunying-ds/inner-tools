@@ -3,8 +3,10 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { useLang } from "@/lib/i18n";
 
 export function FeedbackForm() {
+  const { t } = useLang();
   const [content, setContent] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -19,7 +21,7 @@ export function FeedbackForm() {
         body: JSON.stringify({ content }),
       });
     } catch {
-      // 静默失败
+      // silent fail
     } finally {
       setSubmitted(true);
       setLoading(false);
@@ -27,14 +29,14 @@ export function FeedbackForm() {
   }
 
   if (submitted) {
-    return <p className="text-sm text-muted-foreground text-center py-2">谢谢你的反馈 ✦</p>;
+    return <p className="text-sm text-muted-foreground text-center py-2">{t.explore.feedbackThanks}</p>;
   }
 
   return (
     <div className="space-y-3 pt-2 border-t border-border text-left">
-      <p className="text-sm text-foreground/80">对这个工具有什么反馈？</p>
+      <p className="text-sm text-foreground/80">{t.explore.feedbackQuestion}</p>
       <Textarea
-        placeholder="和你平时处理情绪的方式相比，用这个工具有什么不同？有没有帮助？哪里顺畅、哪里卡住……"
+        placeholder={t.explore.feedbackPlaceholder}
         value={content}
         onChange={(e) => setContent(e.target.value)}
         rows={3}
@@ -42,10 +44,10 @@ export function FeedbackForm() {
       />
       <div className="flex gap-2">
         <Button size="sm" onClick={handleSubmit} disabled={loading || !content.trim()}>
-          {loading ? "提交中…" : "提交"}
+          {loading ? t.explore.feedbackSubmitting : t.explore.feedbackSubmit}
         </Button>
         <Button size="sm" variant="ghost" onClick={() => setSubmitted(true)}>
-          跳过
+          {t.explore.feedbackSkip}
         </Button>
       </div>
     </div>

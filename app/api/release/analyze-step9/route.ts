@@ -13,7 +13,7 @@ const analysisSchema = {
     },
     feedback: {
       type: "string",
-      description: "Warm Chinese acknowledgment of what the user described (1-2 sentences)",
+      description: "Warm acknowledgment of what the user described (1-2 sentences), in the language matching the lang parameter",
     },
     hasNewEmotion: {
       type: "boolean",
@@ -27,7 +27,9 @@ export async function POST(req: NextRequest) {
   const ip = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "unknown";
   if (!checkRateLimit(ip).ok) return NextResponse.json({ error: "Too many requests" }, { status: 429 });
 
-  const { userInput, currentEmotion } = await req.json();
+  const { userInput, currentEmotion, lang } = await req.json();
+  const isEn = lang === "en";
+  const fallbackFeedback = isEn ? "Thank you for sharing. This release is complete." : "感谢你的记录，这次释放完成了。";
 
   try {
     const message = await client.messages.create({
@@ -48,9 +50,11 @@ export async function POST(req: NextRequest) {
 
 "${userInput}"
 
+Respond in ${isEn ? "English" : "Chinese"}.
+
 Determine:
 
-1. RELEASE SIGNALS — physical/emotional signs the body is releasing: yawning (打哈欠), sighing (叹气), dry heaving (干呕), tears, tingling, warmth, feeling lighter, deep breath, spontaneous laughter, muscle relaxation, spaciousness. These are POSITIVE — warmly validate them as signs the release is working.
+1. RELEASE SIGNALS — physical/emotional signs the body is releasing: yawning, sighing, dry heaving, tears, tingling, warmth, feeling lighter, deep breath, spontaneous laughter, muscle relaxation, spaciousness. These are POSITIVE — warmly validate them as signs the release is working.
 
 2. NEW EMOTION — a new distinct emotion or situation they want to process.
 
@@ -58,8 +62,7 @@ Determine:
 
 Rules:
 - Dry heaving, nausea, yawning = release signals, NOT new emotions to process
-- If it's a release signal: acknowledge it warmly ("干呕是身体在排出紧绷的能量，这很好。")
-- Keep feedback brief, warm, in Chinese
+- Keep feedback brief, warm, in ${isEn ? "English" : "Chinese"}
 - hasNewEmotion: true only if they explicitly describe a new emotion worth a new release cycle`,
         },
       ],
@@ -69,7 +72,7 @@ Rules:
     if (!toolUse || toolUse.type !== "tool_use") {
       return NextResponse.json({
         type: "release_signal",
-        feedback: "感谢你的记录，这次释放完成了。",
+        feedback: fallbackFeedback,
         hasNewEmotion: false,
       });
     }
@@ -79,7 +82,7 @@ Rules:
     console.error("[analyze-step9]", e);
     return NextResponse.json({
       type: "release_signal",
-      feedback: "感谢你的记录，这次释放完成了。",
+      feedback: fallbackFeedback,
       hasNewEmotion: false,
     });
   }

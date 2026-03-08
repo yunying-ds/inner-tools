@@ -3,12 +3,14 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { useLang } from "@/lib/i18n";
 
 export default function EnterPage() {
   const [code, setCode] = useState("");
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const { t } = useLang();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -33,22 +35,22 @@ export default function EnterPage() {
       <div className="max-w-xs w-full space-y-6">
         <div className="text-center space-y-1">
           <h1 className="text-xl font-medium">Inner Tools</h1>
-          <p className="text-sm text-muted-foreground">输入邀请码进入</p>
+          <p className="text-sm text-muted-foreground">{t.enter.subtitle}</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-3">
           <input
             type="text"
-            placeholder="邀请码"
+            placeholder={t.enter.placeholder}
             value={code}
             onChange={(e) => setCode(e.target.value)}
             autoFocus
             className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
           />
           {error && (
-            <p className="text-xs text-destructive">邀请码不正确，请再试一次</p>
+            <p className="text-xs text-destructive">{t.enter.error}</p>
           )}
           <Button type="submit" className="w-full" disabled={loading || !code.trim()}>
-            {loading ? "验证中…" : "进入"}
+            {loading ? t.enter.loading : t.enter.submit}
           </Button>
         </form>
       </div>

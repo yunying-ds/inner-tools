@@ -8,6 +8,12 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // English mode users bypass the invite code gate
+  const lang = request.cookies.get('lang')?.value;
+  if (lang === 'en') {
+    return NextResponse.next();
+  }
+
   const code = request.cookies.get('invite_code')?.value;
   if (code !== process.env.INVITE_CODE) {
     const url = request.nextUrl.clone();
